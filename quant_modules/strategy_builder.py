@@ -14,7 +14,7 @@ class StrategyBuilder(StrategyBuilderInterface):
     def threshold_strategy(self, signal: np.ndarray, upper: float, lower: float) -> np.ndarray:
         x = ensure_2d("signal", safe_float32(signal))
         if lower > upper:
-            raise ValueError("lower must be <= upper")
+            raise ValueError(f"lower ({lower}) must be <= upper ({upper})")
         out = np.zeros_like(x, dtype=np.int8)
         out[x >= upper] = 1
         out[x <= lower] = -1

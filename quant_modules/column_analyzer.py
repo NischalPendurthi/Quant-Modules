@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from .interfaces import ColumnAnalyzerInterface
-from .ingestion import ingest_matrix
+from .ingestion import downcast_numeric, ingest_matrix
 from .utils import ensure_1d
 
 
@@ -72,7 +72,7 @@ class ColumnAnalyzer(ColumnAnalyzerInterface):
             y_std = np.nanstd(y, axis=0) + 1e-12
             cov = np.nanmean((x[:, None] - x_mu) * (y - y_mu), axis=0)
             corr[i, :] = (cov / (x_std * y_std)).astype(np.float32)
-        return {"lags": lags.astype(np.int16), "corr": corr}
+        return {"lags": downcast_numeric(lags), "corr": corr}
 
     def analyze_missingness(self) -> dict:
         mask = np.isnan(self.values)

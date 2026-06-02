@@ -4,7 +4,7 @@ import numpy as np
 
 try:
     from numba import njit
-except Exception:  # pragma: no cover
+except ImportError:  # pragma: no cover
     def njit(*args, **kwargs):
         def decorator(func):
             return func
@@ -67,7 +67,12 @@ def rolling_mean_std_2d(values: np.ndarray, window: int) -> tuple[np.ndarray, np
 
 @njit(cache=True)
 def fractional_diff_weights(d: float, size: int, threshold: float = 1e-5) -> np.ndarray:
-    """Adapted from fractional differencing recurrence commonly used in mlfinlab."""
+    """Build fractional differencing weights via recursive binomial expansion.
+
+    d: fractional differencing order (0 => identity, 1 => first difference)
+    size: maximum number of weights to generate
+    threshold: stop early once absolute weight falls below this value
+    """
     weights = np.empty(size, dtype=np.float64)
     weights[0] = 1.0
     for k in range(1, size):

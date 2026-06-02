@@ -12,9 +12,12 @@ from quant_modules import (
 )
 
 
+RANDOM_SEED = 7
+
+
 class TestFramework(unittest.TestCase):
     def setUp(self):
-        rng = np.random.default_rng(7)
+        rng = np.random.default_rng(RANDOM_SEED)
         self.prices = np.cumsum(rng.normal(0.0, 0.1, size=(300, 3)).astype(np.float32), axis=0) + 100.0
         self.signals = rng.normal(0.0, 1.0, size=(300, 3)).astype(np.float32)
 

@@ -49,7 +49,9 @@ class FeatureFactory(FeatureFactoryInterface):
             out[width - 1 :, c] = conv.astype(np.float32)
         return out
 
-    def alpha_volume_price_correlation(self, close: np.ndarray, volume: np.ndarray, window: int = 6) -> np.ndarray:
+    def alpha_volume_price_correlation(
+        self, close: np.ndarray, volume: np.ndarray, window: int = 6, volume_delta_lag: int = 2
+    ) -> np.ndarray:
         """Adapted from alpha-style formula using rolling correlation of price/volume deltas."""
         c = ensure_2d("close", safe_float32(close))
         v = ensure_2d("volume", safe_float32(volume))
@@ -57,9 +59,12 @@ class FeatureFactory(FeatureFactoryInterface):
             raise ValueError(f"shape mismatch: close{c.shape} != volume{v.shape}")
         if window < 2:
             raise ValueError("window must be >= 2")
+        if volume_delta_lag < 1:
+            raise ValueError("volume_delta_lag must be >= 1")
 
         dlogv = np.full_like(v, np.nan, dtype=np.float32)
-        dlogv[2:, :] = np.log(v[2:, :] + 1e-12) - np.log(v[:-2, :] + 1e-12)
+        # Default lag=2 is a common alpha-style choice to reduce single-bar microstructure noise.
+        dlogv[volume_delta_lag:, :] = np.log(v[volume_delta_lag:, :] + 1e-12) - np.log(v[:-volume_delta_lag, :] + 1e-12)
         ret = np.full_like(c, np.nan, dtype=np.float32)
         ret[1:, :] = c[1:, :] / (c[:-1, :] + 1e-12) - 1.0
 

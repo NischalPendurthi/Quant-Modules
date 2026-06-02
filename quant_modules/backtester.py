@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .interfaces import BacktesterInterface
+from .interfaces import BacktesterInterface, EventStrategyInterface
 from .signal_evaluator import SignalEvaluator
 from .utils import ensure_2d, safe_float32
 
@@ -29,7 +29,7 @@ class Backtester(BacktesterInterface):
 
     def run_event_driven(self, data: np.ndarray, strategy: object) -> dict:
         arr = ensure_2d("data", safe_float32(data))
-        if not hasattr(strategy, "generate_signal"):
+        if not isinstance(strategy, EventStrategyInterface):
             raise TypeError("strategy must implement generate_signal(row: np.ndarray) -> np.ndarray")
 
         signals = np.empty_like(arr, dtype=np.float32)

@@ -38,6 +38,12 @@ class SignalEvaluator(SignalEvaluatorInterface):
         return np.nanmean(np.abs(np.diff(p, axis=0)), axis=0).astype(np.float32)
 
     def compute_sharpe(self, pnl: np.ndarray, periods_per_year: int = 252 * 390) -> np.ndarray:
+        """Annualized Sharpe ratio.
+
+        Expects minute-level PnL by default.
+        The default 98,280 periods/year uses US equity regular-session minute bars
+        (252 trading days * 390 minutes per day).
+        """
         x = ensure_2d("pnl", safe_float32(pnl))
         mu = np.nanmean(x, axis=0)
         sigma = np.nanstd(x, axis=0) + 1e-12

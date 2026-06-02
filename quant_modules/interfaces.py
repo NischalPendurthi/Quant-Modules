@@ -1,7 +1,13 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Protocol, runtime_checkable
 import numpy as np
+
+
+@runtime_checkable
+class EventStrategyInterface(Protocol):
+    def generate_signal(self, row: np.ndarray) -> np.ndarray: ...
 
 
 class ColumnAnalyzerInterface(ABC):
