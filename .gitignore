@@ -39,3 +39,6 @@ htmlcov/
 Thumbs.db
 .idea/
 .vscode/
+
+#datasets
+*.csv
