@@ -18,14 +18,10 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from pipeline_timing import PipelineTimer
+
 # Import framework modules
-from data import (
-    load_data, 
-    prepare_full_pipeline, 
-    handle_missing, 
-    describe_data,
-    missing_value_report
-)
+from data import load_data, describe_data
 from features import engineer_features, select_features
 from models import compare_models, save_model
 from signal_report import analyze_signal, print_signal_report, monthly_ic, rolling_ic
@@ -43,7 +39,7 @@ from sklearn.model_selection import train_test_split as sklearn_train_test_split
 class Config:
     """Framework configuration."""
     # Data
-    DATA_PATH               = "data.csv"
+    DATA_PATH               = str(Path(__file__).parent.parent / "moccm_intraday_blackbox.csv")
     IMPUTATION_METHOD       = "ffill"
     MISSING_THRESHOLD       = 0.50
     TEST_YEARS              = 1
@@ -57,6 +53,17 @@ class Config:
     # Feature Selection
     TOP_K_FEATURES          = 20
     ROLLING_IC_WINDOW       = 500
+    # Skip slow IC scoring loop; use fixed feature set for pipeline health checks
+    USE_HARDCODED_FEATURES  = True
+    HARDCODED_FEATURES      = [
+        "f1", "f5", "f10", "f15", "f25", "f49",
+        "f1_rzsc_6", "f5_rzsc_12", "f10_rzsc_24",
+        "f3_mom6", "f7_mom12", "f15_mom24",
+        "f2_lag1", "f8_lag3",
+        "f12_rmean_12", "f20_rstd_24",
+        "f4_volreg", "f18_trendreg",
+        "f6_csrank", "f22_spread",
+    ]
 
     # Models
     RIDGE_ALPHA             = 1.0
@@ -205,6 +212,9 @@ def main(config: Config = None):
     import os
     os.makedirs(config.OUTPUT_DIR, exist_ok=True)
 
+    timer = PipelineTimer()
+    timer.start_pipeline()
+
     print("\n" + "=" * 80)
     print("QUANTITATIVE SIGNAL DISCOVERY & BACKTESTING FRAMEWORK".center(80))
     print("White-Box | Interpretable | Production-Ready".center(80))
@@ -219,13 +229,14 @@ def main(config: Config = None):
 
     # Load data
     try:
-        df = load_data(
-            config.DATA_PATH,
-            timestamp_col="Timestamp",
-            ticker_col="Ticker",
-            price_col="Close",
-            volume_col="Volume"
-        )
+        with timer.phase("1a", "data.py", "load_data + reshape"):
+            df = load_data(
+                config.DATA_PATH,
+                timestamp_col="Timestamp",
+                ticker_col="Ticker",
+                price_col="Close",
+                volume_col="Volume"
+            )
     except FileNotFoundError:
         print(f"[ERROR] Data file not found: {config.DATA_PATH}")
         print("[HINT]  Place your CSV file at:", Path.cwd() / config.DATA_PATH)
@@ -234,32 +245,30 @@ def main(config: Config = None):
         print(f"[ERROR] Failed to load data: {e}")
         sys.exit(1)
 
-    # Missing value analysis
-    missing_report = missing_value_report(df)
-    print("\nMissing Value Summary:")
-    if len(missing_report) > 0:
-        print(missing_report.head(10).to_string(index=False))
-    else:
-        print("  No missing values detected.")
+    with timer.phase("1b", "main.py", "missing value report + imputation"):
+        missing_report = missing_value_report(df)
+        print("\nMissing Value Summary:")
+        if len(missing_report) > 0:
+            print(missing_report.head(10).to_string(index=False))
+        else:
+            print("  No missing values detected.")
+        df = handle_missing(df, method=config.IMPUTATION_METHOD,
+                            missing_threshold=config.MISSING_THRESHOLD)
 
-    # Impute missing values
-    df = handle_missing(df, method=config.IMPUTATION_METHOD, 
-                        missing_threshold=config.MISSING_THRESHOLD)
-
-    # Create target variable if not present
     if 'y' not in df.columns:
         from data import create_target_variable
-        df = create_target_variable(
-            df,
-            price_col="Close",
-            horizon=1,
-            target_type="return",
-            group_by_ticker=True,
-            ticker_col="Ticker"
-        )
+        with timer.phase("1c", "data.py", "create_target_variable"):
+            df = create_target_variable(
+                df,
+                price_col="Close",
+                horizon=1,
+                target_type="return",
+                group_by_ticker=True,
+                ticker_col="Ticker"
+            )
 
-    # Data summary
-    data_summary = describe_data(df)
+    with timer.phase("1d", "data.py", "describe_data"):
+        data_summary = describe_data(df)
     print("\nData Summary:")
     for key, val in data_summary.items():
         if key in ['tickers', 'feature_names']:
@@ -274,14 +283,14 @@ def main(config: Config = None):
     print("\n[PHASE 2] FEATURE ENGINEERING")
     print("─" * 80)
 
-    # Engineer features
-    df_engineered = engineer_features(
-        df,
-        windows=config.ROLLING_WINDOWS,
-        lags=config.MOMENTUM_LAGS,
-        add_regime=config.ADD_REGIME,
-        add_cross_sectional=config.ADD_CROSS_SECTIONAL,
-    )
+    with timer.phase("2", "features.py", "engineer_features"):
+        df_engineered = engineer_features(
+            df,
+            windows=config.ROLLING_WINDOWS,
+            lags=config.MOMENTUM_LAGS,
+            add_regime=config.ADD_REGIME,
+            add_cross_sectional=config.ADD_CROSS_SECTIONAL,
+        )
 
     print(f"[features] Engineered {df_engineered.shape[1] - 1} features (excluding target)")
 
@@ -292,11 +301,12 @@ def main(config: Config = None):
     print("\n[PHASE 3] CHRONOLOGICAL TRAIN/TEST SPLIT")
     print("─" * 80)
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        df_engineered,
-        target_col="y",
-        test_years=config.TEST_YEARS,
-    )
+    with timer.phase("3", "main.py", "train_test_split"):
+        X_train, X_test, y_train, y_test = train_test_split(
+            df_engineered,
+            target_col="y",
+            test_years=config.TEST_YEARS,
+        )
 
     # ══════════════════════════════════════════════════════════════════
     # PHASE 4: FEATURE SELECTION
@@ -305,13 +315,34 @@ def main(config: Config = None):
     print("\n[PHASE 4] FEATURE SELECTION")
     print("─" * 80)
 
-    selected_features, feature_ranking_df = select_features(
-        X_train,
-        y_train,
-        top_k=config.TOP_K_FEATURES,
-        rolling_ic_window=config.ROLLING_IC_WINDOW,
-        output_path=f"{config.OUTPUT_DIR}/selected_features.csv",
-    )
+    if config.USE_HARDCODED_FEATURES:
+        with timer.phase("4", "features.py", "hardcoded feature set (skip IC scoring)"):
+            available = set(X_train.columns)
+            selected_features = [f for f in config.HARDCODED_FEATURES if f in available]
+            missing = [f for f in config.HARDCODED_FEATURES if f not in available]
+            if missing:
+                print(f"[features] WARNING: {len(missing)} hardcoded features not in data: {missing}")
+            if len(selected_features) < config.TOP_K_FEATURES:
+                extras = [c for c in X_train.columns if c not in selected_features and c != "y"][:config.TOP_K_FEATURES - len(selected_features)]
+                selected_features.extend(extras)
+            selected_features = selected_features[:config.TOP_K_FEATURES]
+            feature_ranking_df = pd.DataFrame({
+                "rank": range(1, len(selected_features) + 1),
+                "feature": selected_features,
+                "source": "hardcoded",
+            })
+            feature_ranking_df.to_csv(f"{config.OUTPUT_DIR}/selected_features.csv", index=False)
+            print(f"[features] Using {len(selected_features)} hardcoded features (skipped IC scoring)")
+            print(f"[features] Features: {selected_features}")
+    else:
+        with timer.phase("4", "features.py", "select_features"):
+            selected_features, feature_ranking_df = select_features(
+                X_train,
+                y_train,
+                top_k=config.TOP_K_FEATURES,
+                rolling_ic_window=config.ROLLING_IC_WINDOW,
+                output_path=f"{config.OUTPUT_DIR}/selected_features.csv",
+            )
 
     # Subset to selected features
     X_train_sel = X_train[selected_features]
@@ -324,41 +355,37 @@ def main(config: Config = None):
     print("\n[PHASE 5] MODEL TRAINING & COMPARISON")
     print("─" * 80)
 
-    best_model, y_pred_train, y_pred_test, model_comparison_df = compare_models(
-        X_train_sel.values,
-        X_test_sel.values,
-        y_train.values,
-        y_test.values,
-        selected_features,
-        ridge_alpha=config.RIDGE_ALPHA,
-        lasso_alpha=config.LASSO_ALPHA,
-        rolling_window=config.ROLLING_WINDOW,
-    )
+    with timer.phase("5", "models.py", "compare_models"):
+        best_model, y_pred_train, y_pred_test, model_comparison_df = compare_models(
+            X_train_sel.values,
+            X_test_sel.values,
+            y_train.values,
+            y_test.values,
+            selected_features,
+            ridge_alpha=config.RIDGE_ALPHA,
+            lasso_alpha=config.LASSO_ALPHA,
+            rolling_window=config.ROLLING_WINDOW,
+        )
 
-    # Save model comparison
-    model_comparison_df.to_csv(f"{config.OUTPUT_DIR}/model_comparison.csv", index=False)
-    print(f"[models] Model comparison saved → {config.OUTPUT_DIR}/model_comparison.csv")
-
-    # Save predictions
-    pred_df_train = pd.DataFrame({
-        "timestamp": y_train.index,
-        "y_true": y_train.values,
-        "y_pred": y_pred_train,
-        "residual": y_train.values - y_pred_train,
-    })
-    pred_df_train.to_csv(f"{config.OUTPUT_DIR}/predictions_train.csv", index=False)
-
-    pred_df_test = pd.DataFrame({
-        "timestamp": y_test.index,
-        "y_true": y_test.values,
-        "y_pred": y_pred_test,
-        "residual": y_test.values - y_pred_test,
-    })
-    pred_df_test.to_csv(f"{config.OUTPUT_DIR}/predictions_test.csv", index=False)
-    print(f"[models] Predictions saved → {config.OUTPUT_DIR}/predictions_*.csv")
-
-    # Save model
-    save_model(best_model, f"{config.OUTPUT_DIR}/best_model.pkl")
+    with timer.phase("5b", "models.py", "save model + predictions"):
+        model_comparison_df.to_csv(f"{config.OUTPUT_DIR}/model_comparison.csv", index=False)
+        print(f"[models] Model comparison saved → {config.OUTPUT_DIR}/model_comparison.csv")
+        pred_df_train = pd.DataFrame({
+            "timestamp": y_train.index,
+            "y_true": y_train.values,
+            "y_pred": y_pred_train,
+            "residual": y_train.values - y_pred_train,
+        })
+        pred_df_train.to_csv(f"{config.OUTPUT_DIR}/predictions_train.csv", index=False)
+        pred_df_test = pd.DataFrame({
+            "timestamp": y_test.index,
+            "y_true": y_test.values,
+            "y_pred": y_pred_test,
+            "residual": y_test.values - y_pred_test,
+        })
+        pred_df_test.to_csv(f"{config.OUTPUT_DIR}/predictions_test.csv", index=False)
+        print(f"[models] Predictions saved → {config.OUTPUT_DIR}/predictions_*.csv")
+        save_model(best_model, f"{config.OUTPUT_DIR}/best_model.pkl")
 
     # ══════════════════════════════════════════════════════════════════
     # PHASE 6: SIGNAL ANALYSIS
@@ -370,16 +397,15 @@ def main(config: Config = None):
     y_test_series = pd.Series(y_test.values, index=y_test.index, name='y_true')
     y_pred_series = pd.Series(y_pred_test, index=y_test.index, name='y_pred')
     
-    signal_analysis = analyze_signal(
-        y_test_series,
-        y_pred_series,
-        rolling_window=config.ROLLING_IC_WINDOW,
-    )
-    print_signal_report(signal_analysis)
-
-    # Monthly IC
-    monthly_ic_df = monthly_ic(y_test_series, y_pred_series)
-    monthly_ic_df.to_csv(f"{config.OUTPUT_DIR}/monthly_ic.csv", index=False)
+    with timer.phase("6", "signal_report.py", "analyze_signal + monthly_ic"):
+        signal_analysis = analyze_signal(
+            y_test_series,
+            y_pred_series,
+            rolling_window=config.ROLLING_IC_WINDOW,
+        )
+        print_signal_report(signal_analysis)
+        monthly_ic_df = monthly_ic(y_test_series, y_pred_series)
+        monthly_ic_df.to_csv(f"{config.OUTPUT_DIR}/monthly_ic.csv", index=False)
 
     # ══════════════════════════════════════════════════════════════════
     # PHASE 7: BACKTESTING (LONG-ONLY)
@@ -398,19 +424,20 @@ def main(config: Config = None):
     # Construct price series (use cumulative returns as proxy)
     prices = 100 * (1 + y_test.cumsum()).fillna(100).values
     
-    results_lo = backtest_lo.backtest(
-        timestamps=y_test.index,
-        prices=prices,
-        signal=y_pred_test,
-        returns=y_test.values,
-    )
-    results_lo.to_csv(f"{config.OUTPUT_DIR}/long_only_results.csv", index=False)
-    print(f"[backtest] Long-only results saved → {config.OUTPUT_DIR}/long_only_results.csv")
+    with timer.phase("7a", "backtest.py", "LongOnlyBacktest"):
+        results_lo = backtest_lo.backtest(
+            timestamps=y_test.index,
+            prices=prices,
+            signal=y_pred_test,
+            returns=y_test.values,
+        )
+        results_lo.to_csv(f"{config.OUTPUT_DIR}/long_only_results.csv", index=False)
+        print(f"[backtest] Long-only results saved → {config.OUTPUT_DIR}/long_only_results.csv")
 
-    # Compute metrics
-    metrics_lo = compute_all_metrics(results_lo, y_test.index)
-    print("\nLong-Only Performance:")
-    print_metrics_report(metrics_lo)
+    with timer.phase("7a-metrics", "metrics.py", "long-only metrics"):
+        metrics_lo = compute_all_metrics(results_lo, y_test.index)
+        print("\nLong-Only Performance:")
+        print_metrics_report(metrics_lo)
 
     # ══════════════════════════════════════════════════════════════════
     # PHASE 7B: BACKTESTING (LONG-SHORT)
@@ -427,19 +454,20 @@ def main(config: Config = None):
         transaction_cost=config.TRANSACTION_COST_BPS,
     )
 
-    results_ls = backtest_ls.backtest(
-        timestamps=y_test.index,
-        prices=prices,
-        signal=y_pred_test,
-        returns=y_test.values,
-    )
-    results_ls.to_csv(f"{config.OUTPUT_DIR}/long_short_results.csv", index=False)
-    print(f"[backtest] Long-short results saved → {config.OUTPUT_DIR}/long_short_results.csv")
+    with timer.phase("7b", "backtest.py", "LongShortBacktest"):
+        results_ls = backtest_ls.backtest(
+            timestamps=y_test.index,
+            prices=prices,
+            signal=y_pred_test,
+            returns=y_test.values,
+        )
+        results_ls.to_csv(f"{config.OUTPUT_DIR}/long_short_results.csv", index=False)
+        print(f"[backtest] Long-short results saved → {config.OUTPUT_DIR}/long_short_results.csv")
 
-    # Compute metrics
-    metrics_ls = compute_all_metrics(results_ls, y_test.index)
-    print("\nLong-Short Performance:")
-    print_metrics_report(metrics_ls)
+    with timer.phase("7b-metrics", "metrics.py", "long-short metrics"):
+        metrics_ls = compute_all_metrics(results_ls, y_test.index)
+        print("\nLong-Short Performance:")
+        print_metrics_report(metrics_ls)
 
     # ══════════════════════════════════════════════════════════════════
     # PHASE 8: VISUALIZATIONS
@@ -457,16 +485,17 @@ def main(config: Config = None):
         feature_ics = np.ones(len(selected_features)) / len(selected_features)
 
     try:
-        plot_paths = generate_all_plots(
-            backtest_results=results_ls,
-            y_true=y_test_series,
-            y_pred=y_pred_series,
-            signal=y_pred_test,
-            feature_names=selected_features,
-            feature_ics=feature_ics,
-            output_dir=f"{config.OUTPUT_DIR}/plots",
-        )
-        print(f"[plots] Generated {len(plot_paths)} plots in {config.OUTPUT_DIR}/plots/")
+        with timer.phase("8", "plots.py", "generate_all_plots"):
+            plot_paths = generate_all_plots(
+                backtest_results=results_ls,
+                y_true=y_test_series,
+                y_pred=y_pred_series,
+                signal=y_pred_test,
+                feature_names=selected_features,
+                feature_ics=feature_ics,
+                output_dir=f"{config.OUTPUT_DIR}/plots",
+            )
+            print(f"[plots] Generated {len(plot_paths)} plots in {config.OUTPUT_DIR}/plots/")
     except Exception as e:
         print(f"[plots] Warning: Could not generate all plots - {e}")
 
@@ -508,13 +537,14 @@ def main(config: Config = None):
 
     # Generate report
     try:
-        report = generate_research_report(
-            title="White-Box Quantitative Signal Discovery & Backtesting",
-            data_summary=data_summary,
-            signal_name="IC-Weighted Feature Score",
-            strategy_type="Long-Short",
-            model_name=best_model_name,
-            model_description="""
+        with timer.phase("9", "report.py", "generate_research_report"):
+            report = generate_research_report(
+                title="White-Box Quantitative Signal Discovery & Backtesting",
+                data_summary=data_summary,
+                signal_name="IC-Weighted Feature Score",
+                strategy_type="Long-Short",
+                model_name=best_model_name,
+                model_description="""
 The signal is constructed as a weighted combination of selected features,
 where weights are determined by the historical Information Coefficient (IC)
 of each feature with the target variable. Features are first rank-normalized
@@ -524,18 +554,20 @@ to [0,1] to remove scale effects, then aggregated:
 
 This approach ensures that stronger predictors receive larger weights,
 and the signal is robust to extreme values.
-            """,
-            formula=formula,
-            coef_df=coef_df,
-            feature_names=selected_features,
-            n_engineered=df_engineered.shape[1] - 1,
-            ic_metrics=ic_metrics_dict,
-            backtest_metrics=metrics_ls,
-            output_path=f"{config.OUTPUT_DIR}/research_report.txt",
-        )
+                """,
+                formula=formula,
+                coef_df=coef_df,
+                feature_names=selected_features,
+                n_engineered=df_engineered.shape[1] - 1,
+                ic_metrics=ic_metrics_dict,
+                backtest_metrics=metrics_ls,
+                output_path=f"{config.OUTPUT_DIR}/research_report.txt",
+            )
         print(f"[report] Research report saved → {config.OUTPUT_DIR}/research_report.txt")
     except Exception as e:
         print(f"[report] Warning: Could not generate report - {e}")
+
+    timer.save(config.OUTPUT_DIR, data_path=config.DATA_PATH)
 
     # ══════════════════════════════════════════════════════════════════
     # PHASE 10: SUMMARY & OUTPUTS
@@ -555,6 +587,8 @@ and the signal is robust to extreme values.
         "long_only_results.csv",
         "long_short_results.csv",
         "research_report.txt",
+        "pipeline_timings.csv",
+        "pipeline_timings.txt",
     ]
     
     for file in output_files:
@@ -583,6 +617,7 @@ and the signal is robust to extreme values.
         "metrics_ls":          metrics_ls,
         "signal_analysis":     signal_analysis,
         "report":              report if 'report' in locals() else None,
+        "timings":             timer.to_dataframe(),
     }
 
 

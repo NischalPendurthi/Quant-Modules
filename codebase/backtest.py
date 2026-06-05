@@ -315,6 +315,7 @@ class LongShortBacktest:
             # ── Mark-to-market ──────────────────────────────────────
             position_value = position * price_t
             unrealized_pnl = position * price_t * ret_t if position != 0 else 0
+            realized_pnl = 0
             nav = cash + position_value
             gross_pnl = nav - self.initial_capital
 
@@ -327,6 +328,7 @@ class LongShortBacktest:
                 "cash":           round(cash, 2),
                 "position_value": round(position_value, 2),
                 "gross_pnl":      round(gross_pnl, 2),
+                "realized_pnl":   round(realized_pnl, 2),
                 "unrealized_pnl": round(unrealized_pnl, 2),
                 "nav":            round(nav, 2),
                 "turnover":       round(turnover, 2),

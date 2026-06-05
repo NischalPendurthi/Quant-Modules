@@ -11,6 +11,47 @@ import warnings
 warnings.filterwarnings("ignore")
 
 
+def _reshape_multi_ticker_long(
+    df: pd.DataFrame,
+    timestamp_col: str,
+    ticker_col: str,
+    price_col: str,
+    volume_col: Optional[str],
+    target_ticker: str = "TICKER_00",
+) -> pd.DataFrame:
+    """
+    Convert long-format multi-ticker OHLCV data to wide format with f1-f49 predictors.
+
+    Each row becomes one timestamp; predictor tickers (excluding target) map to f1..f49.
+    """
+    close_wide = df.pivot(index=timestamp_col, columns=ticker_col, values=price_col)
+    tickers = sorted(close_wide.columns, key=lambda t: int(str(t).split("_")[1]))
+
+    if target_ticker not in tickers:
+        raise ValueError(f"Target ticker {target_ticker!r} not found in data")
+
+    predictor_tickers = [t for t in tickers if t != target_ticker]
+    out = pd.DataFrame(index=close_wide.index)
+    out[price_col] = close_wide[target_ticker]
+
+    for i, ticker in enumerate(predictor_tickers, start=1):
+        out[f"f{i}"] = close_wide[ticker]
+
+    if volume_col and volume_col in df.columns:
+        vol_wide = df.pivot(index=timestamp_col, columns=ticker_col, values=volume_col)
+        out[volume_col] = vol_wide[target_ticker]
+
+    out = out.reset_index()
+    if out.columns[0] != timestamp_col:
+        out = out.rename(columns={out.columns[0]: timestamp_col})
+
+    print(
+        f"[data] Reshaped to {len(out):,} timestamps × {len(out.columns)} columns "
+        f"({len(predictor_tickers)} predictors for {target_ticker})"
+    )
+    return out
+
+
 def load_data(
     filepath: str,
     timestamp_col: str = "Timestamp",
@@ -50,9 +91,13 @@ def load_data(
     # Convert timestamp to datetime if not already
     if timestamp_col in df.columns:
         df[timestamp_col] = pd.to_datetime(df[timestamp_col])
-    
-    # Handle duplicate timestamps
-    if handle_duplicates == "last":
+
+    # Multi-ticker long format → wide (one row per timestamp, f1-f49 predictors)
+    if ticker_col and ticker_col in df.columns:
+        df = _reshape_multi_ticker_long(
+            df, timestamp_col, ticker_col, price_col, volume_col
+        )
+    elif handle_duplicates == "last":
         dup_count = df.duplicated(subset=[timestamp_col]).sum()
         if dup_count > 0:
             print(f"[data] WARNING: {dup_count:,} duplicated timestamps detected – keeping {handle_duplicates}.")
@@ -61,7 +106,7 @@ def load_data(
         df = df.drop_duplicates(subset=[timestamp_col], keep="first")
     elif handle_duplicates == "drop":
         df = df.drop_duplicates(subset=[timestamp_col], keep=False)
-    
+
     # Set timestamp as index
     df.set_index(timestamp_col, inplace=True)
     
