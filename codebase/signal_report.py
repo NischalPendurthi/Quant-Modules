@@ -46,43 +46,34 @@ def spearman_ic(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     return float(rho)
 
 
-def compute_ic_metrics(
-    y_true: np.ndarray,
-    y_pred: np.ndarray,
-    index: Optional[pd.Index] = None,
-) -> Dict:
-    """
-    Compute comprehensive IC metrics.
+def compute_ic_metrics(y_true, y_pred, index=None):
+    y_true = pd.Series(y_true, index=index)
+    y_pred = pd.Series(y_pred, index=index)
 
-    Returns
-    -------
-    dict with:
-        mean_ic, median_ic, ic_std, icir
-        mean_rank_ic, rank_ic_std, rank_icir
-    """
-    # Fixed: Compute IC for the entire arrays, not creating single-element arrays
-    ic = pearson_ic(y_true, y_pred)
-    rank_ic = spearman_ic(y_true, y_pred)
+    rolling = rolling_ic(
+        y_true,
+        y_pred,
+        window=min(1000, len(y_true)//5),
+        method="pearson"
+    ).dropna()
 
-    ic_mean      = ic if not np.isnan(ic) else 0.0
-    ic_median    = ic if not np.isnan(ic) else 0.0
-    ic_std       = 0.0  # Single value has no std
-    icir         = ic_mean / (ic_std + 1e-12) if ic_std > 0 else ic_mean * 1e12
-
-    rank_ic_mean = rank_ic if not np.isnan(rank_ic) else 0.0
-    rank_ic_std  = 0.0
-    rank_icir    = rank_ic_mean / (rank_ic_std + 1e-12) if rank_ic_std > 0 else rank_ic_mean * 1e12
+    rank_rolling = rolling_ic(
+        y_true,
+        y_pred,
+        window=min(1000, len(y_true)//5),
+        method="spearman"
+    ).dropna()
 
     return {
-        "mean_ic":       round(ic_mean,      6),
-        "median_ic":     round(ic_median,    6),
-        "ic_std":        round(ic_std,       6),
-        "icir":          round(icir,         6),
-        "mean_rank_ic":  round(rank_ic_mean, 6),
-        "rank_ic_std":   round(rank_ic_std,  6),
-        "rank_icir":     round(rank_icir,    6),
-    }
+        "mean_ic": rolling.mean(),
+        "median_ic": rolling.median(),
+        "ic_std": rolling.std(),
+        "icir": rolling.mean() / (rolling.std() + 1e-12),
 
+        "mean_rank_ic": rank_rolling.mean(),
+        "rank_ic_std": rank_rolling.std(),
+        "rank_icir": rank_rolling.mean() / (rank_rolling.std() + 1e-12),
+    }
 
 def rolling_ic(
     y_true: pd.Series,

@@ -24,7 +24,7 @@ warnings.filterwarnings("ignore")
 def annual_return(nav: np.ndarray, timestamps: pd.Index) -> float:
     """
     Compute annualized return.
-    Return = (nav_end / nav_start) ^ (252 / n_days) - 1
+    Return = (nav_end / nav_start) ^ (18900 / n_days) - 1
     """
     start_nav = nav[0]
     end_nav   = nav[-1]
@@ -54,10 +54,10 @@ def total_return(nav: np.ndarray) -> float:
 # Risk Metrics
 # ══════════════════════════════════════════════════════════════════════
 
-def volatility(returns: np.ndarray, periods_per_year: int = 252) -> float:
+def volatility(returns: np.ndarray, periods_per_year: int = 18900) -> float:
     """
     Annualized volatility.
-    σ_annual = σ_daily × √252
+    σ_annual = σ_daily × √18900
     """
     valid = returns[np.isfinite(returns)]
     if len(valid) < 2:
@@ -69,10 +69,10 @@ def volatility(returns: np.ndarray, periods_per_year: int = 252) -> float:
 def sharpe_ratio(
     returns: np.ndarray,
     risk_free_rate: float = 0.0,
-    periods_per_year: int = 252,
+    periods_per_year: int = 18900,
 ) -> float:
     """
-    Sharpe Ratio = (μ_portfolio - r_f) / σ_portfolio × √252
+    Sharpe Ratio = (μ_portfolio - r_f) / σ_portfolio × √18900
     Measures excess return per unit of risk.
     """
     valid = returns[np.isfinite(returns)]
@@ -88,10 +88,10 @@ def sharpe_ratio(
 def sortino_ratio(
     returns: np.ndarray,
     risk_free_rate: float = 0.0,
-    periods_per_year: int = 252,
+    periods_per_year: int = 18900,
 ) -> float:
     """
-    Sortino Ratio = (μ - r_f) / σ_downside × √252
+    Sortino Ratio = (μ - r_f) / σ_downside × √18900
     Like Sharpe, but penalizes only downside volatility.
     """
     valid = returns[np.isfinite(returns)]
@@ -108,20 +108,14 @@ def sortino_ratio(
     return (mean_ret - risk_free_rate) * np.sqrt(periods_per_year) / downside_vol
 
 
-def calmar_ratio(
-    returns: np.ndarray,
-    nav: np.ndarray,
-    periods_per_year: int = 252,
-) -> float:
-    """
-    Calmar Ratio = Annual Return / Maximum Drawdown
-    Measures return relative to worst drawdown.
-    """
-    annual_ret = annual_return(nav, pd.date_range(start=0, periods=len(nav), freq="5min"))
-    max_dd     = maximum_drawdown(nav)
-    if max_dd >= 0 or max_dd == 0:  # no drawdown or invalid
+def calmar_ratio(nav, timestamps):
+    ann = annual_return(nav, timestamps)
+    dd = maximum_drawdown(nav)
+
+    if abs(dd) < 1e-12:
         return 0.0
-    return annual_ret / abs(max_dd)
+
+    return ann / abs(dd)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -301,8 +295,21 @@ def compute_all_metrics(
     metrics_dict : comprehensive performance summary
     """
     nav = backtest_results["nav"].values
-    pnl = backtest_results["realized_pnl"].values
-    turnover_series = backtest_results["turnover"].values
+
+    # realized_pnl: use column if present, else derive from NAV changes
+    if "realized_pnl" in backtest_results.columns:
+        pnl = backtest_results["realized_pnl"].values
+    else:
+        pnl = np.diff(nav, prepend=nav[0])  # bar-by-bar dollar P&L
+
+    # turnover: accept either column name produced by the backtest engine
+    if "turnover" in backtest_results.columns:
+        turnover_series = backtest_results["turnover"].values
+    elif "Interval_Turnover" in backtest_results.columns:
+        turnover_series = backtest_results["Interval_Turnover"].values
+    else:
+        turnover_series = np.zeros(len(nav))
+
     returns = np.diff(nav) / (nav[:-1] + 1e-12)
 
     # Returns
@@ -314,7 +321,7 @@ def compute_all_metrics(
     vol = volatility(returns)
     sr = sharpe_ratio(returns)
     sortino = sortino_ratio(returns)
-    calmar = calmar_ratio(returns, nav)
+    calmar = calmar_ratio(nav, timestamps)
 
     # Drawdown
     max_dd = maximum_drawdown(nav)

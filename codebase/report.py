@@ -86,29 +86,40 @@ can be expressed as a single closed-form formula suitable for real-time producti
 
     def add_data_section(self, data_summary: Dict):
         """Add data overview section."""
+        # Provide defaults for missing keys
+        start_date = data_summary.get("start_date") or data_summary.get("date_range_start", "N/A")
+        end_date = data_summary.get("end_date") or data_summary.get("date_range_end", "N/A")
+        n_rows = data_summary.get("n_rows") or data_summary.get("rows", 0)
+        n_features = data_summary.get("n_features") or data_summary.get("feature_count", 49)
+        freq_minutes = data_summary.get("freq_minutes", 5)
+        target_mean = data_summary.get("target_mean", 0)
+        target_std = data_summary.get("target_std", 0)
+        target_skew = data_summary.get("target_skew", 0)
+        target_kurt = data_summary.get("target_kurtosis") or data_summary.get("target_kurtosis", 0)
+        
         section = f"""
 DATA OVERVIEW
 ═════════════════════════════════════════════════════════════════════════════════
 
 Dataset Composition
 ───────────────────────────────────────────────────────────────────────────────
-Start Date:         {data_summary.get("start_date", "N/A")}
-End Date:           {data_summary.get("end_date", "N/A")}
-Total Observations: {data_summary.get("n_rows", 0):,}
-Data Frequency:     {data_summary.get("freq_minutes", 5):.0f}-minute bars
-Raw Features:       {data_summary.get("n_features", 49)}
+Start Date:         {start_date}
+End Date:           {end_date}
+Total Observations: {n_rows:,}
+Data Frequency:     {freq_minutes:.0f}-minute bars
+Raw Features:       {n_features}
 
 Target Variable Statistics
 ───────────────────────────────────────────────────────────────────────────────
-Mean Return:        {data_summary.get("target_mean", 0):>10.8f}
-Std Dev:            {data_summary.get("target_std", 0):>10.8f}
-Skewness:           {data_summary.get("target_skew", 0):>10.4f}
-Kurtosis:           {data_summary.get("target_kurt", 0):>10.4f}
+Mean Return:        {target_mean:>10.8f}
+Std Dev:            {target_std:>10.8f}
+Skewness:           {target_skew:>10.4f}
+Kurtosis:           {target_kurt:>10.4f}
 
 ASSUMPTIONS
 ───────────────────────────────────────────────────────────────────────────────
 ✓ No Look-Ahead Bias: All features computed from data available at time T.
-✓ No Microstucture: Prices assumed to be end-of-period 5-min bar closes.
+✓ No Microstructure: Prices assumed to be end-of-period 5-min bar closes.
 ✓ Feasible Execution: Signal can be acted upon within the same bar.
 """
         self.sections.append(section)
@@ -225,21 +236,21 @@ INFORMATION COEFFICIENT (IC) ANALYSIS
 
 DEFINITION
 ───────────────────────────────────────────────────────────────────────────────
-Information Coefficient = Correlation(signal_t, target_{t+1})
+Information Coefficient = Correlation(signal_t, target_{{t+1}})
 
 In-Sample (Training) IC
 ───────────────────────────────────────────────────────────────────────────────
-Mean IC:            {ic_metrics.get("train_ic", 0):>10.6f}
-IC Median:          {ic_metrics.get("train_ic_median", 0):>10.6f}
-IC Std Dev:         {ic_metrics.get("train_ic_std", 0):>10.6f}
-ICIR (IC/σ(IC)):    {ic_metrics.get("train_icir", 0):>10.4f}
+Mean IC:            {ic_metrics.get("train_ic", ic_metrics.get("mean_ic", 0)):>10.6f}
+IC Median:          {ic_metrics.get("train_ic_median", ic_metrics.get("median_ic", 0)):>10.6f}
+IC Std Dev:         {ic_metrics.get("train_ic_std", ic_metrics.get("ic_std", 0)):>10.6f}
+ICIR (IC/σ(IC)):    {ic_metrics.get("train_icir", ic_metrics.get("icir", 0)):>10.4f}
 
 Out-of-Sample (Testing) IC
 ───────────────────────────────────────────────────────────────────────────────
-Mean IC:            {ic_metrics.get("test_ic", 0):>10.6f}
-IC Median:          {ic_metrics.get("test_ic_median", 0):>10.6f}
-IC Std Dev:         {ic_metrics.get("test_ic_std", 0):>10.6f}
-ICIR (IC/σ(IC)):    {ic_metrics.get("test_icir", 0):>10.4f}
+Mean IC:            {ic_metrics.get("test_ic", ic_metrics.get("mean_ic", 0)):>10.6f}
+IC Median:          {ic_metrics.get("test_ic_median", ic_metrics.get("median_ic", 0)):>10.6f}
+IC Std Dev:         {ic_metrics.get("test_ic_std", ic_metrics.get("ic_std", 0)):>10.6f}
+ICIR (IC/σ(IC)):    {ic_metrics.get("test_icir", ic_metrics.get("icir", 0)):>10.4f}
 
 INTERPRETATION
 ───────────────────────────────────────────────────────────────────────────────
@@ -410,7 +421,7 @@ def generate_research_report(
     report.add_data_section(data_summary)
 
     report.add_feature_engineering_section(
-        n_raw_features=data_summary.get("n_features", 49),
+        n_raw_features=data_summary.get("feature_count", data_summary.get("n_features", 49)),
         n_engineered_features=n_engineered,
         n_selected_features=len(feature_names),
         feature_names=feature_names,

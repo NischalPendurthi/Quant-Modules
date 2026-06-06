@@ -186,6 +186,16 @@ def plot_rolling_ic(
     ic_vals = []
     idx_vals = []
     
+    # Ensure we have enough data
+    if len(y_true) < window:
+        fig, ax = plt.subplots(figsize=figsize)
+        ax.text(0.5, 0.5, f"Insufficient data for rolling IC (need {window}, have {len(y_true)})", 
+                ha='center', va='center', transform=ax.transAxes)
+        ax.set_title(title, fontsize=14, fontweight="bold")
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        return fig, ax
+    
     for i in range(window, len(y_true)):
         y_w = y_true.iloc[i - window: i]
         p_w = y_pred.iloc[i - window: i]
@@ -196,9 +206,12 @@ def plot_rolling_ic(
             idx_vals.append(y_true.index[i - 1])
     
     fig, ax = plt.subplots(figsize=figsize)
-    ax.plot(idx_vals, ic_vals, linewidth=2, label="Rolling IC", color="darkorange")
-    ax.axhline(y=0, color="black", linestyle="--", linewidth=0.8, alpha=0.5)
-    ax.fill_between(idx_vals, ic_vals, alpha=0.3, color="lightyellow")
+    if idx_vals:
+        ax.plot(idx_vals, ic_vals, linewidth=2, label="Rolling IC", color="darkorange")
+        ax.axhline(y=0, color="black", linestyle="--", linewidth=0.8, alpha=0.5)
+        ax.fill_between(idx_vals, ic_vals, alpha=0.3, color="lightyellow")
+    else:
+        ax.text(0.5, 0.5, "No valid IC values computed", ha='center', va='center', transform=ax.transAxes)
     ax.set_title(title, fontsize=14, fontweight="bold")
     ax.set_xlabel("Date", fontsize=11)
     ax.set_ylabel("Information Coefficient", fontsize=11)
@@ -268,8 +281,9 @@ def plot_actual_vs_predicted(
     ax.scatter(y_t, y_p, alpha=0.5, s=20, color="steelblue")
     
     # Add diagonal reference line
-    lims = [min(y_t.min(), y_p.min()), max(y_t.max(), y_p.max())]
-    ax.plot(lims, lims, "r--", linewidth=2, label="Perfect Prediction")
+    if len(y_t) > 0 and len(y_p) > 0:
+        lims = [min(y_t.min(), y_p.min()), max(y_t.max(), y_p.max())]
+        ax.plot(lims, lims, "r--", linewidth=2, label="Perfect Prediction")
     
     ax.set_title(title, fontsize=14, fontweight="bold")
     ax.set_xlabel("Actual Target", fontsize=11)
@@ -295,10 +309,20 @@ def plot_feature_importance(
     save_path: Optional[str] = None,
 ):
     """Bar plot of feature importance."""
+    # Ensure lengths match
+    min_len = min(len(feature_names), len(importances))
     df_imp = pd.DataFrame({
-        "feature": feature_names,
-        "importance": importances,
+        "feature": feature_names[:min_len],
+        "importance": importances[:min_len],
     }).sort_values("importance", key=abs, ascending=False).head(top_k)
+    
+    if len(df_imp) == 0:
+        fig, ax = plt.subplots(figsize=figsize)
+        ax.text(0.5, 0.5, "No feature importance data available", ha='center', va='center', transform=ax.transAxes)
+        ax.set_title(title, fontsize=14, fontweight="bold")
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        return fig, ax
     
     colors = ["green" if x > 0 else "red" for x in df_imp["importance"]]
     fig, ax = plt.subplots(figsize=figsize)
@@ -327,6 +351,7 @@ def plot_monthly_returns_heatmap(
     backtest_results_copy = backtest_results.copy()
     backtest_results_copy["date"] = pd.to_datetime(backtest_results_copy["timestamp"]).dt.date
     
+    # Group by month
     monthly_pnl = backtest_results_copy.groupby(
         pd.to_datetime(backtest_results_copy["date"]).dt.to_period("M")
     )["realized_pnl"].sum()
@@ -396,8 +421,10 @@ def plot_turnover(
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=figsize)
     
     # Turnover
+    # Use a bar width that's appropriate for the number of points
+    bar_width = max(0.01, 1.0 / max(len(backtest_results), 1))
     ax1.bar(backtest_results["timestamp"], backtest_results["turnover"], 
-            color="steelblue", alpha=0.7, width=0.01)
+            color="steelblue", alpha=0.7, width=bar_width)
     ax1.set_title("Daily Turnover", fontsize=12, fontweight="bold")
     ax1.set_ylabel("Turnover ($)", fontsize=11)
     ax1.grid(True, alpha=0.3, axis="y")
@@ -475,16 +502,13 @@ def generate_all_plots(
     plot_signal_distribution(signal, save_path=plot_paths["signal_dist"])
     
     plot_paths["actual_vs_pred"] = f"{output_dir}/07_actual_vs_predicted.png"
-    plot_actual_vs_predicted(y_true.values, y_pred.values, 
-                             save_path=plot_paths["actual_vs_pred"])
+    plot_actual_vs_predicted(y_true.values, y_pred.values, save_path=plot_paths["actual_vs_pred"])
     
     plot_paths["feature_imp"] = f"{output_dir}/08_feature_importance.png"
-    plot_feature_importance(feature_names, feature_ics, 
-                           save_path=plot_paths["feature_imp"])
+    plot_feature_importance(feature_names, feature_ics, save_path=plot_paths["feature_imp"])
     
     plot_paths["monthly_returns"] = f"{output_dir}/09_monthly_returns_heatmap.png"
-    plot_monthly_returns_heatmap(backtest_results, 
-                                 save_path=plot_paths["monthly_returns"])
+    plot_monthly_returns_heatmap(backtest_results, save_path=plot_paths["monthly_returns"])
     
     plot_paths["exposure"] = f"{output_dir}/10_exposure.png"
     plot_exposure(backtest_results, save_path=plot_paths["exposure"])

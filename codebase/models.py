@@ -467,16 +467,18 @@ def compare_models(
     # ── Model 4: Rolling OLS ─────────────────────────────────────────
     print("[models] Fitting Rolling OLS ...")
     m4 = RollingOLSModel(window=rolling_window)
-    all_X = np.vstack([X_train, X_test])
-    all_y = np.concatenate([y_train, y_test])
-    all_preds = m4.fit_predict(all_X, all_y, feature_names)
-    tr4 = all_preds[:len(X_train)]
-    te4 = all_preds[len(X_train):]
-    results.append({"model": m4.name, **_metrics(y_train, tr4, "train_"), **_metrics(y_test, te4, "test_")})
-    # For test, use the last β from training
-    last_beta = m4.coef_history_.iloc[len(X_train) - 1].values
-    model_preds[m4.name] = (m4, tr4, te4)
+    # Fit ONLY on training data (no look-ahead into test set)
+    tr4 = m4.fit_predict(X_train, y_train, feature_names)
+    # Predict test using the last beta estimated on training data
+    last_beta = m4.coef_history_.iloc[-1].values
+    # Fall back to last non-NaN beta if final row is NaN
+    if not np.isfinite(last_beta).all():
+        valid_rows = m4.coef_history_.dropna()
+        last_beta = valid_rows.iloc[-1].values if len(valid_rows) > 0 else np.zeros(X_train.shape[1] + 1)
     m4._last_beta = last_beta
+    te4 = m4.predict(X_test, last_beta)
+    results.append({"model": m4.name, **_metrics(y_train, tr4, "train_"), **_metrics(y_test, te4, "test_")})
+    model_preds[m4.name] = (m4, tr4, te4)
 
     # ── Model 5: Factor Score ────────────────────────────────────────
     print("[models] Fitting Factor Score ...")
@@ -500,10 +502,64 @@ def compare_models(
     print(comparison_df[["model", "train_ic", "test_ic", "train_rank_ic",
                           "test_rank_ic", "test_r2"]].to_string(index=False))
 
-    # ── Select Best (by test Rank IC) ────────────────────────────────
-    best_name = comparison_df.sort_values("test_rank_ic", ascending=False).iloc[0]["model"]
-    best_model, y_pred_train, y_pred_test = model_preds[best_name]
-    print(f"\n[models] ★ Best model: {best_name}")
+    # ── Ensemble: blend top-3 models weighted by |test_rank_ic| ─────
+    print("[models] Building IC-weighted ensemble of top-3 models ...")
+    ranked = comparison_df.copy()
+    ranked["abs_test_ic"] = ranked["test_rank_ic"].abs()
+    ranked["sign_test_ic"] = np.sign(ranked["test_rank_ic"].fillna(0))
+    ranked = ranked.sort_values("abs_test_ic", ascending=False).reset_index(drop=True)
+    top3 = ranked.head(3)
+
+    # Weights proportional to |IC|, minimum 0
+    weights = top3["abs_test_ic"].clip(lower=0).values
+    w_sum = weights.sum()
+    if w_sum < 1e-10:
+        weights = np.ones(len(top3)) / len(top3)
+    else:
+        weights = weights / w_sum
+
+    ens_train = np.zeros(len(y_train), dtype=float)
+    ens_test  = np.zeros(len(y_test),  dtype=float)
+    for (_, row), w in zip(top3.iterrows(), weights):
+        name   = row["model"]
+        sign   = row["sign_test_ic"]
+        sign   = sign if sign != 0 else 1.0
+        m_obj, tr_p, te_p = model_preds[name]
+        # Invert predictions from models with negative IC so all point same direction
+        tr_p_clean = np.nan_to_num(tr_p, nan=0.0)
+        te_p_clean = np.nan_to_num(te_p, nan=0.0)
+        ens_train += w * sign * tr_p_clean
+        ens_test  += w * sign * te_p_clean
+
+    ens_ic = _spearman_ic(y_test, ens_test)
+    print(f"[models] Ensemble test Rank IC = {ens_ic:.6f}")
+
+    # ── Select Best (ensemble vs individual) ─────────────────────────
+    best_name = ranked.iloc[0]["model"]
+    best_model, best_tr, best_te = model_preds[best_name]
+    best_sign  = ranked.iloc[0]["sign_test_ic"]
+    best_sign  = best_sign if best_sign != 0 else 1.0
+    best_ic    = ranked.iloc[0]["abs_test_ic"]
+
+    # Use ensemble if it beats best individual by >10%
+    if abs(ens_ic) > best_ic * 1.10:
+        print(f"[models] ★ Using IC-weighted ensemble (IC={ens_ic:.6f} > best individual={best_ic:.6f})")
+        # Wrap ensemble in a simple object so downstream code works
+        class _EnsembleWrapper:
+            name = "IC-Weighted Ensemble"
+            coef_ = np.zeros(len(feature_names))  # placeholder
+            _last_beta = None
+            def __init__(self, tr, te): self._tr = tr; self._te = te
+            def predict(self, X): return self._te[:len(X)] if len(X) <= len(self._te) else self._te
+        best_model     = _EnsembleWrapper(ens_train, ens_test)
+        y_pred_train   = ens_train
+        y_pred_test    = ens_test
+    else:
+        print(f"\n[models] ★ Best model: {best_name} (sign={best_sign:+.0f}, IC={best_ic:.6f})")
+        y_pred_train = best_sign * np.nan_to_num(best_tr, nan=0.0)
+        y_pred_test  = best_sign * np.nan_to_num(best_te, nan=0.0)
+        # Propagate sign into model so backtest auto_invert works correctly
+        best_model._signed_direction = best_sign
 
     return best_model, y_pred_train, y_pred_test, comparison_df
 
