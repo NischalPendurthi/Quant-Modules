@@ -1,12 +1,7 @@
 """
 metrics.py - Performance Analysis & Risk Metrics
 ================================================
-Comprehensive portfolio performance and risk measurement:
-- Returns metrics (Annual Return, CAGR)
-- Risk metrics (Sharpe, Sortino, Calmar)
-- Drawdown analysis
-- Hit ratio and win/loss statistics
-- Value at Risk (VaR) and Expected Shortfall (CVaR)
+Fixed: Annual return calculation, hit ratio, trade-based metrics
 """
 
 import numpy as np
@@ -17,29 +12,37 @@ import warnings
 warnings.filterwarnings("ignore")
 
 
+# Constants
+BARS_PER_DAY = 75
+TRADING_DAYS_PER_YEAR = 252
+BARS_PER_YEAR = BARS_PER_DAY * TRADING_DAYS_PER_YEAR  # 18,900
+
+
 # ══════════════════════════════════════════════════════════════════════
 # Returns Metrics
 # ══════════════════════════════════════════════════════════════════════
 
 def annual_return(nav: np.ndarray, timestamps: pd.Index) -> float:
     """
-    Compute annualized return.
-    Return = (nav_end / nav_start) ^ (18900 / n_days) - 1
+    Compute annualized return using actual bar count.
+    Annual Return = (nav_end / nav_start) ^ (BARS_PER_YEAR / n_bars) - 1
     """
     start_nav = nav[0]
     end_nav   = nav[-1]
-    n_days    = (timestamps[-1] - timestamps[0]).days
-    years     = max(n_days / 365.25, 0.01)
-    if start_nav <= 0:
+    n_bars    = len(nav)
+    
+    if start_nav <= 0 or n_bars < 2:
         return 0.0
+    
+    years = n_bars / BARS_PER_YEAR
+    if years <= 0:
+        return 0.0
+    
     return float((end_nav / start_nav) ** (1 / years) - 1)
 
 
 def cagr(nav: np.ndarray, timestamps: pd.Index) -> float:
-    """
-    Compound Annual Growth Rate.
-    CAGR = (final_value / initial_value) ^ (1 / years) - 1
-    """
+    """Compound Annual Growth Rate."""
     return annual_return(nav, timestamps)
 
 
@@ -54,45 +57,41 @@ def total_return(nav: np.ndarray) -> float:
 # Risk Metrics
 # ══════════════════════════════════════════════════════════════════════
 
-def volatility(returns: np.ndarray, periods_per_year: int = 18900) -> float:
+def volatility(returns: np.ndarray) -> float:
     """
     Annualized volatility.
-    σ_annual = σ_daily × √18900
+    σ_annual = σ_bar × √BARS_PER_YEAR
     """
     valid = returns[np.isfinite(returns)]
     if len(valid) < 2:
         return 0.0
     daily_vol = float(np.std(valid))
-    return daily_vol * np.sqrt(periods_per_year)
+    return daily_vol * np.sqrt(BARS_PER_YEAR)
 
 
 def sharpe_ratio(
     returns: np.ndarray,
     risk_free_rate: float = 0.0,
-    periods_per_year: int = 18900,
 ) -> float:
     """
-    Sharpe Ratio = (μ_portfolio - r_f) / σ_portfolio × √18900
-    Measures excess return per unit of risk.
+    Sharpe Ratio = (μ_portfolio - r_f) / σ_portfolio × √BARS_PER_YEAR
     """
     valid = returns[np.isfinite(returns)]
     if len(valid) < 2:
         return 0.0
     mean_ret = float(np.mean(valid))
-    vol      = volatility(valid, periods_per_year)
+    vol = volatility(valid)
     if vol <= 0:
         return 0.0
-    return (mean_ret - risk_free_rate) * np.sqrt(periods_per_year) / vol
+    return (mean_ret - risk_free_rate) * np.sqrt(BARS_PER_YEAR) / vol
 
 
 def sortino_ratio(
     returns: np.ndarray,
     risk_free_rate: float = 0.0,
-    periods_per_year: int = 18900,
 ) -> float:
     """
-    Sortino Ratio = (μ - r_f) / σ_downside × √18900
-    Like Sharpe, but penalizes only downside volatility.
+    Sortino Ratio = (μ - r_f) / σ_downside × √BARS_PER_YEAR
     """
     valid = returns[np.isfinite(returns)]
     if len(valid) < 2:
@@ -105,16 +104,14 @@ def sortino_ratio(
         downside_vol = float(np.std(downside_returns))
     if downside_vol <= 0:
         return 0.0
-    return (mean_ret - risk_free_rate) * np.sqrt(periods_per_year) / downside_vol
+    return (mean_ret - risk_free_rate) * np.sqrt(BARS_PER_YEAR) / downside_vol
 
 
 def calmar_ratio(nav, timestamps):
     ann = annual_return(nav, timestamps)
     dd = maximum_drawdown(nav)
-
     if abs(dd) < 1e-12:
         return 0.0
-
     return ann / abs(dd)
 
 
@@ -149,44 +146,74 @@ def average_drawdown(nav: np.ndarray) -> float:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# Win/Loss Statistics
+# Win/Loss Statistics (Trade-based, not bar-based)
 # ══════════════════════════════════════════════════════════════════════
 
-def profit_factor(pnl: np.ndarray) -> float:
+def _extract_trades(position_changes: np.ndarray, pnl_bar: np.ndarray):
+    """
+    Extract trades from position changes.
+    Returns list of trade PnLs.
+    """
+    trades = []
+    current_trade_pnl = 0.0
+    in_trade = False
+    
+    for i in range(len(position_changes)):
+        if position_changes[i] != 0 and not in_trade:
+            # Entering a trade
+            in_trade = True
+            current_trade_pnl = 0.0
+        elif position_changes[i] != 0 and in_trade:
+            # Exiting a trade
+            current_trade_pnl += pnl_bar[i]
+            trades.append(current_trade_pnl)
+            in_trade = False
+            current_trade_pnl = 0.0
+        elif in_trade:
+            # Accumulate intra-trade PnL
+            current_trade_pnl += pnl_bar[i]
+    
+    # Close any open trade at the end
+    if in_trade:
+        trades.append(current_trade_pnl)
+    
+    return np.array(trades)
+
+
+def profit_factor(pnl_trades: np.ndarray) -> float:
     """
     Profit Factor = Σ(wins) / |Σ(losses)|
-    Ratio of gross profit to gross loss.
     """
-    wins   = pnl[pnl > 0].sum()
-    losses = abs(pnl[pnl < 0].sum())
+    wins = pnl_trades[pnl_trades > 0].sum()
+    losses = abs(pnl_trades[pnl_trades < 0].sum())
     if losses <= 0:
         return float('inf') if wins > 0 else 0.0
     return float(wins / losses)
 
 
-def hit_ratio(pnl: np.ndarray) -> float:
+def hit_ratio(pnl_trades: np.ndarray) -> float:
     """Percentage of profitable trades."""
-    if len(pnl) == 0:
+    if len(pnl_trades) == 0:
         return 0.0
-    return float((pnl > 0).sum() / len(pnl))
+    return float((pnl_trades > 0).sum() / len(pnl_trades))
 
 
-def avg_win(pnl: np.ndarray) -> float:
+def avg_win(pnl_trades: np.ndarray) -> float:
     """Average profit per winning trade."""
-    wins = pnl[pnl > 0]
+    wins = pnl_trades[pnl_trades > 0]
     return float(wins.mean()) if len(wins) > 0 else 0.0
 
 
-def avg_loss(pnl: np.ndarray) -> float:
+def avg_loss(pnl_trades: np.ndarray) -> float:
     """Average loss per losing trade."""
-    losses = pnl[pnl < 0]
+    losses = pnl_trades[pnl_trades < 0]
     return float(losses.mean()) if len(losses) > 0 else 0.0
 
 
-def win_loss_ratio(pnl: np.ndarray) -> float:
+def win_loss_ratio(pnl_trades: np.ndarray) -> float:
     """Ratio of average win to average loss."""
-    aw = avg_win(pnl)
-    al = avg_loss(pnl)
+    aw = avg_win(pnl_trades)
+    al = avg_loss(pnl_trades)
     if al >= 0 or al == 0:
         return 0.0
     return float(aw / abs(al))
@@ -200,7 +227,6 @@ def value_at_risk(returns: np.ndarray, confidence: float = 0.95) -> float:
     """
     Value at Risk (VaR):
     VaR_α = worst return at α percentile.
-    VaR_0.95 means the worst 5% loss.
     """
     valid = returns[np.isfinite(returns)]
     if len(valid) < 5:
@@ -212,17 +238,19 @@ def expected_shortfall(returns: np.ndarray, confidence: float = 0.95) -> float:
     """
     Expected Shortfall (CVaR):
     CVaR_α = mean of returns worse than VaR_α.
-    More severe penalty for tail risk.
     """
     valid = returns[np.isfinite(returns)]
     if len(valid) < 5:
         return 0.0
     var = value_at_risk(valid, confidence)
-    return float(np.mean(valid[valid <= var]))
+    tail = valid[valid <= var]
+    if len(tail) == 0:
+        return var
+    return float(np.mean(tail))
 
 
 def skewness(returns: np.ndarray) -> float:
-    """Distribution skewness. Negative = left tail (bad)."""
+    """Distribution skewness."""
     valid = returns[np.isfinite(returns)]
     if len(valid) < 3:
         return 0.0
@@ -230,7 +258,7 @@ def skewness(returns: np.ndarray) -> float:
 
 
 def kurtosis_excess(returns: np.ndarray) -> float:
-    """Excess kurtosis. >0 = fatter tails (more extremes)."""
+    """Excess kurtosis."""
     valid = returns[np.isfinite(returns)]
     if len(valid) < 4:
         return 0.0
@@ -240,14 +268,12 @@ def kurtosis_excess(returns: np.ndarray) -> float:
 def tail_ratio(returns: np.ndarray) -> float:
     """
     Tail Ratio = |gains_99th| / |losses_1st|
-    Measures upside vs downside tail severity.
-    >1 = more upside tail
     """
     valid = returns[np.isfinite(returns)]
     if len(valid) < 10:
         return 1.0
     gains_tail = abs(np.percentile(valid, 99))
-    loss_tail  = abs(np.percentile(valid, 1))
+    loss_tail = abs(np.percentile(valid, 1))
     if loss_tail <= 0:
         return 1.0
     return float(gains_tail / loss_tail)
@@ -263,15 +289,18 @@ def average_turnover(turnover_series: np.ndarray) -> float:
     return float(np.mean(valid)) if len(valid) > 0 else 0.0
 
 
-def avg_holding_period(turnover_series: np.ndarray) -> float:
+def avg_holding_period(turnover_series: np.ndarray, nav: np.ndarray) -> float:
     """
-    Approximate holding period.
-    Assumes turnover ≈ 1/holding_period
+    Average holding period in bars.
+    Holding Period ≈ (Avg NAV) / (Avg Daily Turnover) × (1/BARS_PER_DAY)
     """
-    avg_to = average_turnover(turnover_series)
-    if avg_to <= 0:
+    avg_nav = np.mean(nav)
+    avg_to_daily = average_turnover(turnover_series) * BARS_PER_DAY
+    
+    if avg_to_daily <= 0:
         return float('inf')
-    return 1.0 / avg_to
+    
+    return avg_nav / avg_to_daily
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -284,25 +313,18 @@ def compute_all_metrics(
 ) -> Dict:
     """
     Compute all performance metrics from backtest results.
-
+    
     Parameters
     ----------
-    backtest_results : DataFrame with columns [nav, realized_pnl, turnover]
+    backtest_results : DataFrame with columns [nav, turnover, position?]
     timestamps       : index of timestamps
-
-    Returns
-    -------
-    metrics_dict : comprehensive performance summary
     """
     nav = backtest_results["nav"].values
 
-    # realized_pnl: use column if present, else derive from NAV changes
-    if "realized_pnl" in backtest_results.columns:
-        pnl = backtest_results["realized_pnl"].values
-    else:
-        pnl = np.diff(nav, prepend=nav[0])  # bar-by-bar dollar P&L
-
-    # turnover: accept either column name produced by the backtest engine
+    # Calculate bar-level PnL
+    pnl_bar = np.diff(nav, prepend=nav[0])
+    
+    # Get turnover
     if "turnover" in backtest_results.columns:
         turnover_series = backtest_results["turnover"].values
     elif "Interval_Turnover" in backtest_results.columns:
@@ -310,40 +332,49 @@ def compute_all_metrics(
     else:
         turnover_series = np.zeros(len(nav))
 
-    returns = np.diff(nav) / (nav[:-1] + 1e-12)
-
+    # Bar-level returns for risk metrics
+    returns_bar = pnl_bar / (nav + 1e-12)
+    
+    # Extract trades from position changes (if position column exists)
+    if "position" in backtest_results.columns:
+        position_changes = backtest_results["position"].diff().fillna(0).values
+        trades = _extract_trades(position_changes, pnl_bar)
+    else:
+        # If no position column, approximate trades from nav changes
+        trades = pnl_bar[pnl_bar != 0]
+    
     # Returns
     ann_ret = annual_return(nav, timestamps)
     total_ret = total_return(nav)
     cagr_val = cagr(nav, timestamps)
 
     # Risk
-    vol = volatility(returns)
-    sr = sharpe_ratio(returns)
-    sortino = sortino_ratio(returns)
+    vol = volatility(returns_bar)
+    sr = sharpe_ratio(returns_bar)
+    sortino = sortino_ratio(returns_bar)
     calmar = calmar_ratio(nav, timestamps)
 
     # Drawdown
     max_dd = maximum_drawdown(nav)
     avg_dd = average_drawdown(nav)
 
-    # Win/Loss
-    pf = profit_factor(pnl)
-    hr = hit_ratio(pnl)
-    aw = avg_win(pnl)
-    al = avg_loss(pnl)
-    wlr = win_loss_ratio(pnl)
+    # Win/Loss (trade-based)
+    pf = profit_factor(trades)
+    hr = hit_ratio(trades) if len(trades) > 0 else 0.0
+    aw = avg_win(trades)
+    al = avg_loss(trades)
+    wlr = win_loss_ratio(trades)
 
     # Tail
-    var_95 = value_at_risk(returns, 0.95)
-    cvar_95 = expected_shortfall(returns, 0.95)
-    skew = skewness(returns)
-    kurt = kurtosis_excess(returns)
-    tail_r = tail_ratio(returns)
+    var_95 = value_at_risk(returns_bar, 0.95)
+    cvar_95 = expected_shortfall(returns_bar, 0.95)
+    skew = skewness(returns_bar)
+    kurt = kurtosis_excess(returns_bar)
+    tail_r = tail_ratio(returns_bar)
 
     # Trading
     avg_to = average_turnover(turnover_series)
-    avg_hp = avg_holding_period(turnover_series)
+    avg_hp = avg_holding_period(turnover_series, nav)
 
     return {
         "annual_return":        round(ann_ret, 6),
@@ -367,6 +398,7 @@ def compute_all_metrics(
         "tail_ratio":           round(tail_r, 4),
         "average_turnover":     round(avg_to, 2),
         "avg_holding_period":   round(avg_hp, 2),
+        "num_trades":           len(trades),
     }
 
 
@@ -394,9 +426,10 @@ def print_metrics_report(metrics: Dict):
     print("\n[Win/Loss]")
     print(f"  Profit Factor       : {metrics['profit_factor']:>8.4f}")
     print(f"  Hit Ratio           : {metrics['hit_ratio']:>8.2%}")
-    print(f"  Avg Win             : {metrics['avg_win']:>8.8f}")
-    print(f"  Avg Loss            : {metrics['avg_loss']:>8.8f}")
+    print(f"  Avg Win             : ${metrics['avg_win']:>8,.2f}")
+    print(f"  Avg Loss            : ${metrics['avg_loss']:>8,.2f}")
     print(f"  Win/Loss Ratio      : {metrics['win_loss_ratio']:>8.4f}")
+    print(f"  Number of Trades    : {metrics.get('num_trades', 0):>8}")
 
     print("\n[Tail Risk]")
     print(f"  VaR (95%)           : {metrics['value_at_risk_95']:>8.2%}")
@@ -407,6 +440,6 @@ def print_metrics_report(metrics: Dict):
 
     print("\n[Trading]")
     print(f"  Avg Turnover        : ${metrics['average_turnover']:>8,.2f}")
-    print(f"  Avg Holding Period  : {metrics['avg_holding_period']:>8.2f} periods")
+    print(f"  Avg Holding Period  : {metrics['avg_holding_period']:>8.2f} bars")
 
     print("=" * 70 + "\n")
