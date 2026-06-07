@@ -71,7 +71,7 @@ class Config:
 
     OUTPUT_DIR = "output"
     SUBMISSIONS_DIR = "submissions"
-    TEAM_NAME = "team"
+    TEAM_NAME = "ragasofrevenge"
 
 
 def train_test_split(df, target_col="y", test_years=1):
@@ -237,6 +237,14 @@ def main(config: Config = None):
         rolling_window=config.ROLLING_WINDOW,
     )
 
+    os.makedirs("artifacts", exist_ok=True)
+    save_model(
+        best_model,
+        "artifacts/best_model.pkl"
+    )
+
+    print("[SAVE] Model saved -> artifacts/best_model.pkl")
+
     # ── CRITICAL: Determine signal sign from TRAINING ONLY ───────────
     train_ic, _ = spearmanr(y_pred_train, y_train.values)
     SIGNAL_SIGN = 1 if train_ic >= 0 else -1
@@ -342,7 +350,15 @@ def main(config: Config = None):
     print("PIPELINE COMPLETE")
     print("=" * 80)
     print(f"\nSubmission files: {lo_path}, {ls_path}")
+    import json
 
+    with open("artifacts/signal_sign.json", "w") as f:
+        json.dump(
+            {"signal_sign": int(SIGNAL_SIGN)},
+            f
+        )
+
+    print(f"[SAVE] Signal sign saved -> {SIGNAL_SIGN}")
     return {
         "best_model": best_model,
         "signal_sign": SIGNAL_SIGN,

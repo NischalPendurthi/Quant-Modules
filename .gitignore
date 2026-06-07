@@ -1,6 +1,7 @@
 # Virtual environment
 .venv/
 venv/
+codebase/myenv/
 env/
 
 # Python
@@ -42,3 +43,4 @@ Thumbs.db
 
 #datasets
 *.csv
+codebase/artifacts/best_model.pkl
