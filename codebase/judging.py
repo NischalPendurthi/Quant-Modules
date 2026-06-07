@@ -86,6 +86,15 @@ def main(csv_path):
         short_position_fraction=0.04,
     )
 
+    TEST_MODE = True
+
+    if TEST_MODE:
+        prices = prices[-94500:]
+        timestamps = timestamps[-94500:]
+        signal = signal[-94500:]
+
+    print(f"Testing rows: {len(prices)}")
+
     lo = bt_lo.backtest(
         timestamps=timestamps,
         prices=prices,
