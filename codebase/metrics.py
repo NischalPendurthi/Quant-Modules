@@ -313,6 +313,9 @@ def avg_holding_period(turnover_series: np.ndarray, nav: np.ndarray) -> float:
 # Comprehensive Metrics Summary
 # ══════════════════════════════════════════════════════════════════════
 
+FEE_BPS = 0.0010  # 10 bps — must match grader
+
+
 def compute_all_metrics(
     backtest_results: pd.DataFrame,
     timestamps: pd.Index,
@@ -322,21 +325,32 @@ def compute_all_metrics(
 
     Parameters
     ----------
-    backtest_results : DataFrame with columns [nav, turnover, position?]
+    backtest_results : DataFrame with columns [Gross_NAV, Interval_Turnover, ...]
+                       OR legacy [nav, turnover, ...]
     timestamps       : index of timestamps
+
+    Net_NAV is used for all return/risk metrics so numbers match the grader.
     """
-    nav = backtest_results["nav"].values
-
-    # Calculate bar-level PnL
-    pnl_bar = np.diff(nav, prepend=nav[0])
-
-    # Get turnover
-    if "turnover" in backtest_results.columns:
-        turnover_series = backtest_results["turnover"].values
-    elif "Interval_Turnover" in backtest_results.columns:
-        turnover_series = backtest_results["Interval_Turnover"].values
+    # ── resolve column names (support both old and new schema) ──────────
+    if "Gross_NAV" in backtest_results.columns:
+        gross_nav = backtest_results["Gross_NAV"].values.copy()
+        turnover_col = backtest_results["Interval_Turnover"].values \
+            if "Interval_Turnover" in backtest_results.columns \
+            else np.zeros(len(gross_nav))
+        # Build Net_NAV exactly as the grader does
+        cumulative_fees = (turnover_col * FEE_BPS).cumsum()
+        nav = gross_nav - cumulative_fees          # ← Net_NAV
+        turnover_series = turnover_col
     else:
-        turnover_series = np.zeros(len(nav))
+        # legacy fallback
+        nav = backtest_results["nav"].values
+        turnover_series = backtest_results.get(
+            "turnover", backtest_results.get("Interval_Turnover",
+            pd.Series(np.zeros(len(nav))))
+        ).values
+
+    # Calculate bar-level PnL from Net_NAV
+    pnl_bar = np.diff(nav, prepend=nav[0])
 
     # Bar-level returns for risk metrics
     returns_bar = pnl_bar / (nav + 1e-12)

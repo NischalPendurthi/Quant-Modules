@@ -59,8 +59,8 @@ class Config:
     ]
 
     # Conservative thresholds to reduce turnover
-    LO_ENTRY_PERCENTILE = 0.85
-    LO_EXIT_PERCENTILE = 0.42
+    LO_ENTRY_PERCENTILE = 0.97
+    LO_EXIT_PERCENTILE = 0.30
     LS_LONG_PERCENTILE = 0.95
     LS_SHORT_PERCENTILE = 0.02
     LS_LONG_POSITION_FRACTION = 0.08
@@ -369,19 +369,37 @@ def main(config: Config = None):
     sharpe_ls_full = grader_sharpe(results_ls_full)
     blended_full   = round((sharpe_lo_full + sharpe_ls_full) / 2, 4)
 
-    # --- NAV stats ---
-    nav_lo_test = results_lo_test["Gross_NAV"].values
-    nav_ls_test = results_ls_test["Gross_NAV"].values
+    # --- Net_NAV stats (matches grader: gross minus cumulative fees) ---
+    def net_nav_arr(res):
+        cum_fees = (res["Interval_Turnover"].values * 0.0010).cumsum()
+        return res["Gross_NAV"].values - cum_fees
 
-    print(f"\nLong-Only  (Test Set):")
-    print(f"  Total Return  : {(nav_lo_test[-1] / nav_lo_test[0] - 1) * 100:.2f}%")
+    def max_dd(nav):
+        peak = np.maximum.accumulate(nav)
+        return ((nav - peak) / (peak + 1e-12)).min() * 100
+
+    net_lo_test = net_nav_arr(results_lo_test)
+    net_ls_test = net_nav_arr(results_ls_test)
+    net_lo_full = net_nav_arr(results_lo_full)
+    net_ls_full = net_nav_arr(results_ls_full)
+
+    print(f"\nLong-Only  (Test Set)  — NET of fees:")
+    print(f"  Gross Return  : {(results_lo_test['Gross_NAV'].iloc[-1] / results_lo_test['Gross_NAV'].iloc[0] - 1) * 100:.2f}%")
+    print(f"  Total Fees    : ${(results_lo_test['Interval_Turnover'].sum() * 0.0010):,.2f}")
+    print(f"  Net Return    : {(net_lo_test[-1] / net_lo_test[0] - 1) * 100:.2f}%")
     print(f"  Sharpe        : {sharpe_lo_test}  ← grader-equivalent")
-    print(f"  Max Drawdown  : {((nav_lo_test - np.maximum.accumulate(nav_lo_test)) / np.maximum.accumulate(nav_lo_test)).min() * 100:.2f}%")
+    print(f"  Max Drawdown  : {max_dd(net_lo_test):.2f}%")
 
-    print(f"\nLong-Short (Test Set):")
-    print(f"  Total Return  : {(nav_ls_test[-1] / nav_ls_test[0] - 1) * 100:.2f}%")
+    print(f"\nLong-Short (Test Set)  — NET of fees:")
+    print(f"  Gross Return  : {(results_ls_test['Gross_NAV'].iloc[-1] / results_ls_test['Gross_NAV'].iloc[0] - 1) * 100:.2f}%")
+    print(f"  Total Fees    : ${(results_ls_test['Interval_Turnover'].sum() * 0.0010):,.2f}")
+    print(f"  Net Return    : {(net_ls_test[-1] / net_ls_test[0] - 1) * 100:.2f}%")
     print(f"  Sharpe        : {sharpe_ls_test}  ← grader-equivalent")
-    print(f"  Max Drawdown  : {((nav_ls_test - np.maximum.accumulate(nav_ls_test)) / np.maximum.accumulate(nav_ls_test)).min() * 100:.2f}%")
+    print(f"  Max Drawdown  : {max_dd(net_ls_test):.2f}%")
+
+    print(f"\nSubmission window (94,500 rows) — NET of fees:")
+    print(f"  LO  Net Return: {(net_lo_full[-1] / net_lo_full[0] - 1) * 100:.2f}%  |  Fees: ${(results_lo_full['Interval_Turnover'].sum() * 0.0010):,.2f}")
+    print(f"  LS  Net Return: {(net_ls_full[-1] / net_ls_full[0] - 1) * 100:.2f}%  |  Fees: ${(results_ls_full['Interval_Turnover'].sum() * 0.0010):,.2f}")
 
     print(f"\n{'─'*40}")
     print(f"Submission-set Sharpe (dry-run, grader-equivalent):")

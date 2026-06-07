@@ -18,8 +18,8 @@ warnings.filterwarnings("ignore")
 LONG_ONLY_CAP = 1_000_000.0
 LONG_SHORT_CAP = 2_000_000.0
 ATOL = 0.01
-MAX_TURNOVER_PER_BAR_FRACTION = 0.05  # Max 2% turnover per bar
-MIN_HOLDING_BARS = 1  # Minimum bars to hold a position
+MAX_TURNOVER_PER_BAR_FRACTION = 0.02  # Max 2% turnover per bar
+MIN_HOLDING_BARS = 5  # Minimum bars to hold a position
 
 
 class LongOnlyBacktest:
@@ -31,8 +31,8 @@ class LongOnlyBacktest:
     def __init__(
         self,
         initial_capital: float = LONG_ONLY_CAP,
-        entry_percentile: float = 0.90,
-        exit_percentile: float = 0.50,
+        entry_percentile: float = 0.70,
+        exit_percentile: float = 0.40,
     ):
         self.initial_capital = initial_capital
         self.entry_percentile = entry_percentile
