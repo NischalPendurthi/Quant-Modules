@@ -38,14 +38,14 @@ class Config:
     ADD_REGIME = True
     ADD_CROSS_SECTIONAL = True
 
-    TOP_K_FEATURES = 10  # Reduced from 20 to prevent overfitting
+    TOP_K_FEATURES = 15  # Reduced from 20 to prevent overfitting
     ROLLING_IC_WINDOW = 500
 
     RIDGE_ALPHA = 1.0
     LASSO_ALPHA = 0.001
     ROLLING_WINDOW = 500
 
-    HARDCODED_FEATURES = True
+    HARDCODED_FEATURES = True   
     HARDCODED_FEATURE_LIST = [
         "f1_mom1",
         "f1_rzsc_3",
@@ -59,16 +59,18 @@ class Config:
     ]
 
     # Conservative thresholds to reduce turnover
-    LO_ENTRY_PERCENTILE = 0.97
-    LO_EXIT_PERCENTILE = 0.30
-    LS_LONG_PERCENTILE = 0.95
+    LO_ENTRY_PERCENTILE = 0.95
+    LO_EXIT_PERCENTILE = 0.40
+    LS_LONG_PERCENTILE = 0.93
     LS_SHORT_PERCENTILE = 0.02
-    LS_LONG_POSITION_FRACTION = 0.08
+    LS_LONG_POSITION_FRACTION = 0.12
     LS_SHORT_POSITION_FRACTION = 0.01  # Smaller shorts (asymmetric)
 
     TRANSACTION_COST_BPS = 10.0
     INITIAL_CAPITAL_LO = 1_000_000.0
     INITIAL_CAPITAL_LS = 2_000_000.0
+    LS_LONG_PERCENTILE = 0.93
+    
 
     OUTPUT_DIR = "output"
     SUBMISSIONS_DIR = "submissions"

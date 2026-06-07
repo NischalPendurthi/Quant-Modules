@@ -31,8 +31,8 @@ class LongOnlyBacktest:
     def __init__(
         self,
         initial_capital: float = LONG_ONLY_CAP,
-        entry_percentile: float = 0.70,
-        exit_percentile: float = 0.40,
+        entry_percentile: float = 0.90,
+        exit_percentile: float = 0.50,
     ):
         self.initial_capital = initial_capital
         self.entry_percentile = entry_percentile
@@ -59,6 +59,23 @@ class LongOnlyBacktest:
         print(f"[LO] Signal range: [{signal.min():.4f}, {signal.max():.4f}]")
         print(f"[LO] Entry > {entry_thr:.4f}  |  Exit < {exit_thr:.4f}")
 
+        # Regime gate: rolling Spearman IC of signal vs lagged price returns
+        # At bar t, we use signal[t-W-1:t-1] vs returns[t-W:t] — no look-ahead
+        REGIME_WINDOW = 2000
+        REGIME_THRESHOLD = 0.02
+        from scipy.stats import spearmanr as _spearmanr
+        price_returns = np.diff(prices, prepend=prices[0]) / (np.abs(prices) + 1e-12)
+
+        def _regime_ic(t):
+            if t < REGIME_WINDOW + 1:
+                return 1.0
+            s_w = signal[t - REGIME_WINDOW - 1: t - 1]
+            r_w = price_returns[t - REGIME_WINDOW: t]
+            if len(s_w) < 50:
+                return 1.0
+            ic, _ = _spearmanr(s_w, r_w)
+            return float(ic) if np.isfinite(ic) else 0.0
+
         n = len(timestamps)
         cash = self.initial_capital
         shares = 0.0
@@ -74,13 +91,18 @@ class LongOnlyBacktest:
 
             prev_shares = shares
 
+            # Regime gate — go flat when rolling IC is negative
+            regime_ok = _regime_ic(t) >= REGIME_THRESHOLD
+
             # Decision logic
             if t == 0 or is_last:
                 target_shares = 0.0
+            elif not regime_ok:
+                target_shares = 0.0  # bad regime, stay flat
             elif shares == 0 and signal_t >= entry_thr:
                 # Enter only if enough time before end
                 if t < n - MIN_HOLDING_BARS - 1:
-                    invest = min(cash * 0.8, self.initial_capital * 0.8)
+                    invest = min(cash * 0.95, self.initial_capital * 0.95)
                     target_shares = invest / price_t if price_t > 1e-10 else 0.0
                     entry_bar = t
                 else:
@@ -191,6 +213,22 @@ class LongShortBacktest:
         print(f"[LS] Signal range: [{signal.min():.4f}, {signal.max():.4f}]")
         print(f"[LS] Long  > {upper_thr:.4f}  |  Short < {lower_thr:.4f}")
 
+        # Regime gate (same logic as LO)
+        REGIME_WINDOW = 2000
+        REGIME_THRESHOLD = -0.02
+        from scipy.stats import spearmanr as _spearmanr
+        price_returns = np.diff(prices, prepend=prices[0]) / (np.abs(prices) + 1e-12)
+
+        def _regime_ic(t):
+            if t < REGIME_WINDOW + 1:
+                return 1.0
+            s_w = signal[t - REGIME_WINDOW - 1: t - 1]
+            r_w = price_returns[t - REGIME_WINDOW: t]
+            if len(s_w) < 50:
+                return 1.0
+            ic, _ = _spearmanr(s_w, r_w)
+            return float(ic) if np.isfinite(ic) else 0.0
+
         n = len(timestamps)
         cash = self.initial_capital
         shares = 0.0
@@ -206,8 +244,12 @@ class LongShortBacktest:
 
             prev_shares = shares
 
+            regime_ok = _regime_ic(t) >= REGIME_THRESHOLD
+
             if t == 0 or is_last:
                 target_shares = 0.0
+            elif not regime_ok:
+                target_shares = 0.0  # bad regime, stay flat
             elif shares == 0:
                 if signal_t > upper_thr and t < n - MIN_HOLDING_BARS - 1:
                     # Long signal
