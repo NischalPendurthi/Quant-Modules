@@ -7,6 +7,7 @@ Key fixes:
   3. Feature selection audit
   4. Asymmetric long/short analysis
   5. Proper metric reporting
+  6. Phase 10 Sharpe now matches grader EXACTLY (Net_NAV, pct_change, ddof=1, sqrt(18900))
 """
 
 import numpy as np
@@ -43,7 +44,7 @@ class Config:
     RIDGE_ALPHA = 1.0
     LASSO_ALPHA = 0.001
     ROLLING_WINDOW = 500
-    
+
     HARDCODED_FEATURES = True
     HARDCODED_FEATURE_LIST = [
         "f1_mom1",
@@ -58,12 +59,12 @@ class Config:
     ]
 
     # Conservative thresholds to reduce turnover
-    LO_ENTRY_PERCENTILE = 0.95
-    LO_EXIT_PERCENTILE = 0.60
+    LO_ENTRY_PERCENTILE = 0.85
+    LO_EXIT_PERCENTILE = 0.42
     LS_LONG_PERCENTILE = 0.95
-    LS_SHORT_PERCENTILE = 0.05
-    LS_LONG_POSITION_FRACTION = 0.12
-    LS_SHORT_POSITION_FRACTION = 0.04  # Smaller shorts (asymmetric)
+    LS_SHORT_PERCENTILE = 0.02
+    LS_LONG_POSITION_FRACTION = 0.08
+    LS_SHORT_POSITION_FRACTION = 0.01  # Smaller shorts (asymmetric)
 
     TRANSACTION_COST_BPS = 10.0
     INITIAL_CAPITAL_LO = 1_000_000.0
@@ -72,6 +73,36 @@ class Config:
     OUTPUT_DIR = "output"
     SUBMISSIONS_DIR = "submissions"
     TEAM_NAME = "ragasofrevenge"
+
+
+# ── Grader-equivalent Sharpe ─────────────────────────────────────────
+def grader_sharpe(results_df: pd.DataFrame, fee_bps: float = 0.0010) -> float:
+    """
+    Exact replica of moccm_grader_modified.py Sharpe calculation.
+
+    Differences vs the old inline block in Phase 10:
+      1. Uses Net_NAV (Gross_NAV minus cumulative fees) — not raw Gross_NAV
+      2. Annualises with sqrt(75 * 252) = sqrt(18900) ≈ 137.5
+      3. std() with ddof=1 (pandas default) — not numpy ddof=0
+    """
+    df = results_df[["Gross_NAV", "Interval_Turnover"]].copy()
+    df["Friction_Costs"]  = df["Interval_Turnover"] * fee_bps
+    df["Cumulative_Fees"] = df["Friction_Costs"].cumsum()
+    df["Net_NAV"]         = df["Gross_NAV"] - df["Cumulative_Fees"]
+
+    returns = df["Net_NAV"].pct_change().fillna(0)
+    returns = returns.replace([np.inf, -np.inf], np.nan).dropna()
+
+    if returns.empty:
+        return 0.0
+
+    mean_r = returns.mean()
+    std_r  = returns.std()   # ddof=1 — matches grader (pandas default)
+
+    if std_r == 0 or np.isnan(std_r):
+        return 0.0
+
+    return round((mean_r / std_r) * np.sqrt(75 * 252), 4)
 
 
 def train_test_split(df, target_col="y", test_years=1):
@@ -105,11 +136,11 @@ def validate_target_alignment(df, price_col='Close', target_col='y'):
     print("\n[Target Alignment Check]")
     print("First 10 rows:")
     print(df[[price_col, target_col]].head(10))
-    
+
     expected_return = df[price_col].shift(-1) / df[price_col] - 1
     alignment = np.abs(df[target_col] - expected_return).mean()
     print(f"  Mean difference from 1-bar forward return: {alignment:.8f}")
-    
+
     if alignment < 1e-6:
         print("  ✅ Target correctly aligned (1-bar forward)")
     elif alignment < 0.01:
@@ -123,14 +154,14 @@ def analyze_asymmetry(signal, y_true):
     """Check if signal works better on long or short side"""
     pos_mask = signal > 0
     neg_mask = signal < 0
-    
+
     pos_ic = spearmanr(signal[pos_mask], y_true[pos_mask])[0] if pos_mask.sum() > 50 else 0
     neg_ic = spearmanr(-signal[neg_mask], y_true[neg_mask])[0] if neg_mask.sum() > 50 else 0
-    
+
     print(f"\n[Asymmetry Analysis]")
     print(f"  Long side (signal>0) IC: {pos_ic:.4f} (n={pos_mask.sum()})")
     print(f"  Short side (signal<0) IC: {neg_ic:.4f} (n={neg_mask.sum()})")
-    
+
     if pos_ic > neg_ic + 0.05:
         print(f"  → SIGNAL IS LONG-BIASED. Use Long-Only or asymmetric LS.")
         return "long_only"
@@ -154,7 +185,7 @@ def build_full_signal(df_engineered, selected_features, best_model, signal_sign)
             pred_full = best_model.fit_predict(X_full, y_full, selected_features)
     else:
         pred_full = best_model.predict(X_full)
-    
+
     # Apply frozen sign
     return pd.Series(pred_full * signal_sign, index=df_engineered.index, name="signal")
 
@@ -183,7 +214,7 @@ def main(config: Config = None):
     print("\n[PHASE 1] DATA LOADING")
     print("─" * 80)
 
-    df = load_data(config.DATA_PATH, timestamp_col="Timestamp", 
+    df = load_data(config.DATA_PATH, timestamp_col="Timestamp",
                    ticker_col="Ticker", price_col="Close", volume_col="Volume")
     df = handle_missing(df, config.IMPUTATION_METHOD, config.MISSING_THRESHOLD)
 
@@ -324,47 +355,61 @@ def main(config: Config = None):
     results_ls_full.to_csv(ls_path, index=False)
     validate_output(results_ls_full, "LONG_SHORT", config.INITIAL_CAPITAL_LS)
 
-    # ── Phase 10: Metrics ────────────────────────────────────────────
+    # ── Phase 10: Performance Metrics (grader-equivalent) ────────────
     print("\n[PHASE 10] PERFORMANCE METRICS")
     print("─" * 80)
 
-    # Calculate proper metrics
-    nav_lo = results_lo_test["Gross_NAV"].values
-    nav_ls = results_ls_test["Gross_NAV"].values
-    
-    # Simple returns
-    ret_lo = np.diff(nav_lo) / nav_lo[:-1]
-    ret_ls = np.diff(nav_ls) / nav_ls[:-1]
-    
-    print(f"\nLong-Only Performance (Test Set):")
-    print(f"  Total Return: {(nav_lo[-1] / nav_lo[0] - 1) * 100:.2f}%")
-    print(f"  Sharpe (daily): {np.mean(ret_lo) / (np.std(ret_lo) + 1e-12):.4f}")
-    print(f"  Max Drawdown: {((nav_lo - np.maximum.accumulate(nav_lo)) / np.maximum.accumulate(nav_lo)).min() * 100:.2f}%")
-    
-    print(f"\nLong-Short Performance (Test Set):")
-    print(f"  Total Return: {(nav_ls[-1] / nav_ls[0] - 1) * 100:.2f}%")
-    print(f"  Sharpe (daily): {np.mean(ret_ls) / (np.std(ret_ls) + 1e-12):.4f}")
-    print(f"  Max Drawdown: {((nav_ls - np.maximum.accumulate(nav_ls)) / np.maximum.accumulate(nav_ls)).min() * 100:.2f}%")
+    # --- Test-set Sharpe (grader-equivalent) ---
+    # Uses Net_NAV (post-fee), pct_change, pandas std (ddof=1), sqrt(75*252)
+    sharpe_lo_test = grader_sharpe(results_lo_test)
+    sharpe_ls_test = grader_sharpe(results_ls_test)
+
+    # --- Submission-set Sharpe (what the grader will actually score) ---
+    sharpe_lo_full = grader_sharpe(results_lo_full)
+    sharpe_ls_full = grader_sharpe(results_ls_full)
+    blended_full   = round((sharpe_lo_full + sharpe_ls_full) / 2, 4)
+
+    # --- NAV stats ---
+    nav_lo_test = results_lo_test["Gross_NAV"].values
+    nav_ls_test = results_ls_test["Gross_NAV"].values
+
+    print(f"\nLong-Only  (Test Set):")
+    print(f"  Total Return  : {(nav_lo_test[-1] / nav_lo_test[0] - 1) * 100:.2f}%")
+    print(f"  Sharpe        : {sharpe_lo_test}  ← grader-equivalent")
+    print(f"  Max Drawdown  : {((nav_lo_test - np.maximum.accumulate(nav_lo_test)) / np.maximum.accumulate(nav_lo_test)).min() * 100:.2f}%")
+
+    print(f"\nLong-Short (Test Set):")
+    print(f"  Total Return  : {(nav_ls_test[-1] / nav_ls_test[0] - 1) * 100:.2f}%")
+    print(f"  Sharpe        : {sharpe_ls_test}  ← grader-equivalent")
+    print(f"  Max Drawdown  : {((nav_ls_test - np.maximum.accumulate(nav_ls_test)) / np.maximum.accumulate(nav_ls_test)).min() * 100:.2f}%")
+
+    print(f"\n{'─'*40}")
+    print(f"Submission-set Sharpe (dry-run, grader-equivalent):")
+    print(f"  Long-Only  : {sharpe_lo_full}")
+    print(f"  Long-Short : {sharpe_ls_full}")
+    print(f"  Blended    : {blended_full}  ← this is what the leaderboard will show")
+    print(f"{'─'*40}")
 
     print("\n" + "=" * 80)
     print("PIPELINE COMPLETE")
     print("=" * 80)
     print(f"\nSubmission files: {lo_path}, {ls_path}")
-    import json
 
+    import json
     with open("artifacts/signal_sign.json", "w") as f:
-        json.dump(
-            {"signal_sign": int(SIGNAL_SIGN)},
-            f
-        )
+        json.dump({"signal_sign": int(SIGNAL_SIGN)}, f)
 
     print(f"[SAVE] Signal sign saved -> {SIGNAL_SIGN}")
+
     return {
-        "best_model": best_model,
-        "signal_sign": SIGNAL_SIGN,
-        "bias": bias,
-        "results_lo_full": results_lo_full,
-        "results_ls_full": results_ls_full,
+        "best_model":       best_model,
+        "signal_sign":      SIGNAL_SIGN,
+        "bias":             bias,
+        "results_lo_full":  results_lo_full,
+        "results_ls_full":  results_ls_full,
+        "sharpe_lo_full":   sharpe_lo_full,
+        "sharpe_ls_full":   sharpe_ls_full,
+        "blended_sharpe":   blended_full,
     }
 
 

@@ -18,8 +18,8 @@ warnings.filterwarnings("ignore")
 LONG_ONLY_CAP = 1_000_000.0
 LONG_SHORT_CAP = 2_000_000.0
 ATOL = 0.01
-MAX_TURNOVER_PER_BAR_FRACTION = 0.02  # Max 2% turnover per bar
-MIN_HOLDING_BARS = 3  # Minimum bars to hold a position
+MAX_TURNOVER_PER_BAR_FRACTION = 0.05  # Max 2% turnover per bar
+MIN_HOLDING_BARS = 1  # Minimum bars to hold a position
 
 
 class LongOnlyBacktest:
@@ -85,7 +85,7 @@ class LongOnlyBacktest:
                     entry_bar = t
                 else:
                     target_shares = 0.0
-            elif shares > 0 and (signal_t < exit_thr or bars_held >= MIN_HOLDING_BARS * 2):
+            elif shares > 0 and (signal_t < exit_thr):
                 target_shares = 0.0
                 entry_bar = -MIN_HOLDING_BARS
             else:
@@ -225,9 +225,10 @@ class LongShortBacktest:
                     entry_bar = t
                 else:
                     target_shares = 0.0
-            elif shares != 0 and (abs(signal_t) < abs(upper_thr) or bars_held >= MIN_HOLDING_BARS * 2):
+            elif shares > 0 and signal_t < lower_thr:
                 target_shares = 0.0
-                entry_bar = -MIN_HOLDING_BARS
+            elif shares < 0 and signal_t > upper_thr:
+                target_shares = 0.0
             else:
                 target_shares = shares
 

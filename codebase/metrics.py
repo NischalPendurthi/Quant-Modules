@@ -1,7 +1,10 @@
 """
 metrics.py - Performance Analysis & Risk Metrics
 ================================================
-Fixed: Annual return calculation, hit ratio, trade-based metrics
+Fixed:
+  - sharpe_ratio() and volatility() now use ddof=1 (pandas convention)
+    to match moccm_grader_modified.py which calls returns.std() (ddof=1 default)
+  - Annual return calculation, hit ratio, trade-based metrics
 """
 
 import numpy as np
@@ -30,14 +33,14 @@ def annual_return(nav: np.ndarray, timestamps: pd.Index) -> float:
     start_nav = nav[0]
     end_nav   = nav[-1]
     n_bars    = len(nav)
-    
+
     if start_nav <= 0 or n_bars < 2:
         return 0.0
-    
+
     years = n_bars / BARS_PER_YEAR
     if years <= 0:
         return 0.0
-    
+
     return float((end_nav / start_nav) ** (1 / years) - 1)
 
 
@@ -61,11 +64,13 @@ def volatility(returns: np.ndarray) -> float:
     """
     Annualized volatility.
     σ_annual = σ_bar × √BARS_PER_YEAR
+
+    Uses ddof=1 (unbiased / pandas convention) to match grader's returns.std().
     """
     valid = returns[np.isfinite(returns)]
     if len(valid) < 2:
         return 0.0
-    daily_vol = float(np.std(valid))
+    daily_vol = float(np.std(valid, ddof=1))   # FIX: was ddof=0 (numpy default)
     return daily_vol * np.sqrt(BARS_PER_YEAR)
 
 
@@ -75,15 +80,20 @@ def sharpe_ratio(
 ) -> float:
     """
     Sharpe Ratio = (μ_portfolio - r_f) / σ_portfolio × √BARS_PER_YEAR
+
+    Uses ddof=1 for std to match moccm_grader_modified.py (returns.std() default).
+    Note: for the official score you should use grader_sharpe() in main.py which
+    also applies fee drag on Net_NAV. This function operates on whatever returns
+    array you pass in.
     """
     valid = returns[np.isfinite(returns)]
     if len(valid) < 2:
         return 0.0
     mean_ret = float(np.mean(valid))
-    vol = volatility(valid)
-    if vol <= 0:
+    std_ret  = float(np.std(valid, ddof=1))    # FIX: was ddof=0 (numpy default)
+    if std_ret <= 0:
         return 0.0
-    return (mean_ret - risk_free_rate) * np.sqrt(BARS_PER_YEAR) / vol
+    return (mean_ret - risk_free_rate) * np.sqrt(BARS_PER_YEAR) / std_ret
 
 
 def sortino_ratio(
@@ -101,7 +111,7 @@ def sortino_ratio(
     if len(downside_returns) < 2:
         downside_vol = 0.0
     else:
-        downside_vol = float(np.std(downside_returns))
+        downside_vol = float(np.std(downside_returns, ddof=1))
     if downside_vol <= 0:
         return 0.0
     return (mean_ret - risk_free_rate) * np.sqrt(BARS_PER_YEAR) / downside_vol
@@ -157,26 +167,22 @@ def _extract_trades(position_changes: np.ndarray, pnl_bar: np.ndarray):
     trades = []
     current_trade_pnl = 0.0
     in_trade = False
-    
+
     for i in range(len(position_changes)):
         if position_changes[i] != 0 and not in_trade:
-            # Entering a trade
             in_trade = True
             current_trade_pnl = 0.0
         elif position_changes[i] != 0 and in_trade:
-            # Exiting a trade
             current_trade_pnl += pnl_bar[i]
             trades.append(current_trade_pnl)
             in_trade = False
             current_trade_pnl = 0.0
         elif in_trade:
-            # Accumulate intra-trade PnL
             current_trade_pnl += pnl_bar[i]
-    
-    # Close any open trade at the end
+
     if in_trade:
         trades.append(current_trade_pnl)
-    
+
     return np.array(trades)
 
 
@@ -184,7 +190,7 @@ def profit_factor(pnl_trades: np.ndarray) -> float:
     """
     Profit Factor = Σ(wins) / |Σ(losses)|
     """
-    wins = pnl_trades[pnl_trades > 0].sum()
+    wins   = pnl_trades[pnl_trades > 0].sum()
     losses = abs(pnl_trades[pnl_trades < 0].sum())
     if losses <= 0:
         return float('inf') if wins > 0 else 0.0
@@ -242,7 +248,7 @@ def expected_shortfall(returns: np.ndarray, confidence: float = 0.95) -> float:
     valid = returns[np.isfinite(returns)]
     if len(valid) < 5:
         return 0.0
-    var = value_at_risk(valid, confidence)
+    var  = value_at_risk(valid, confidence)
     tail = valid[valid <= var]
     if len(tail) == 0:
         return var
@@ -273,7 +279,7 @@ def tail_ratio(returns: np.ndarray) -> float:
     if len(valid) < 10:
         return 1.0
     gains_tail = abs(np.percentile(valid, 99))
-    loss_tail = abs(np.percentile(valid, 1))
+    loss_tail  = abs(np.percentile(valid, 1))
     if loss_tail <= 0:
         return 1.0
     return float(gains_tail / loss_tail)
@@ -294,12 +300,12 @@ def avg_holding_period(turnover_series: np.ndarray, nav: np.ndarray) -> float:
     Average holding period in bars.
     Holding Period ≈ (Avg NAV) / (Avg Daily Turnover) × (1/BARS_PER_DAY)
     """
-    avg_nav = np.mean(nav)
+    avg_nav      = np.mean(nav)
     avg_to_daily = average_turnover(turnover_series) * BARS_PER_DAY
-    
+
     if avg_to_daily <= 0:
         return float('inf')
-    
+
     return avg_nav / avg_to_daily
 
 
@@ -313,7 +319,7 @@ def compute_all_metrics(
 ) -> Dict:
     """
     Compute all performance metrics from backtest results.
-    
+
     Parameters
     ----------
     backtest_results : DataFrame with columns [nav, turnover, position?]
@@ -323,7 +329,7 @@ def compute_all_metrics(
 
     # Calculate bar-level PnL
     pnl_bar = np.diff(nav, prepend=nav[0])
-    
+
     # Get turnover
     if "turnover" in backtest_results.columns:
         turnover_series = backtest_results["turnover"].values
@@ -334,71 +340,70 @@ def compute_all_metrics(
 
     # Bar-level returns for risk metrics
     returns_bar = pnl_bar / (nav + 1e-12)
-    
+
     # Extract trades from position changes (if position column exists)
     if "position" in backtest_results.columns:
         position_changes = backtest_results["position"].diff().fillna(0).values
         trades = _extract_trades(position_changes, pnl_bar)
     else:
-        # If no position column, approximate trades from nav changes
         trades = pnl_bar[pnl_bar != 0]
-    
-    # Returns
-    ann_ret = annual_return(nav, timestamps)
-    total_ret = total_return(nav)
-    cagr_val = cagr(nav, timestamps)
 
-    # Risk
-    vol = volatility(returns_bar)
-    sr = sharpe_ratio(returns_bar)
+    # Returns
+    ann_ret   = annual_return(nav, timestamps)
+    total_ret = total_return(nav)
+    cagr_val  = cagr(nav, timestamps)
+
+    # Risk — sharpe_ratio() now uses ddof=1 internally
+    vol     = volatility(returns_bar)
+    sr      = sharpe_ratio(returns_bar)
     sortino = sortino_ratio(returns_bar)
-    calmar = calmar_ratio(nav, timestamps)
+    calmar  = calmar_ratio(nav, timestamps)
 
     # Drawdown
     max_dd = maximum_drawdown(nav)
     avg_dd = average_drawdown(nav)
 
     # Win/Loss (trade-based)
-    pf = profit_factor(trades)
-    hr = hit_ratio(trades) if len(trades) > 0 else 0.0
-    aw = avg_win(trades)
-    al = avg_loss(trades)
+    pf  = profit_factor(trades)
+    hr  = hit_ratio(trades) if len(trades) > 0 else 0.0
+    aw  = avg_win(trades)
+    al  = avg_loss(trades)
     wlr = win_loss_ratio(trades)
 
     # Tail
-    var_95 = value_at_risk(returns_bar, 0.95)
+    var_95  = value_at_risk(returns_bar, 0.95)
     cvar_95 = expected_shortfall(returns_bar, 0.95)
-    skew = skewness(returns_bar)
-    kurt = kurtosis_excess(returns_bar)
-    tail_r = tail_ratio(returns_bar)
+    skew    = skewness(returns_bar)
+    kurt    = kurtosis_excess(returns_bar)
+    tail_r  = tail_ratio(returns_bar)
 
     # Trading
     avg_to = average_turnover(turnover_series)
     avg_hp = avg_holding_period(turnover_series, nav)
 
     return {
-        "annual_return":        round(ann_ret, 6),
-        "total_return":         round(total_ret, 6),
-        "cagr":                 round(cagr_val, 6),
-        "volatility":           round(vol, 6),
-        "sharpe_ratio":         round(sr, 4),
-        "sortino_ratio":        round(sortino, 4),
-        "calmar_ratio":         round(calmar, 4),
-        "maximum_drawdown":     round(max_dd, 6),
-        "average_drawdown":     round(avg_dd, 6),
-        "profit_factor":        round(pf, 4),
-        "hit_ratio":            round(hr, 4),
-        "avg_win":              round(aw, 8),
-        "avg_loss":             round(al, 8),
-        "win_loss_ratio":       round(wlr, 4),
-        "value_at_risk_95":     round(var_95, 6),
-        "cvar_95":              round(cvar_95, 6),
-        "skewness":             round(skew, 4),
-        "kurtosis":             round(kurt, 4),
-        "tail_ratio":           round(tail_r, 4),
-        "average_turnover":     round(avg_to, 2),
-        "avg_holding_period":   round(avg_hp, 2),
-        "num_trades":           len(trades),
+        "annual_return":      round(ann_ret,   6),
+        "total_return":       round(total_ret, 6),
+        "cagr":               round(cagr_val,  6),
+        "volatility":         round(vol,       6),
+        "sharpe_ratio":       round(sr,        4),
+        "sortino_ratio":      round(sortino,   4),
+        "calmar_ratio":       round(calmar,    4),
+        "maximum_drawdown":   round(max_dd,    6),
+        "average_drawdown":   round(avg_dd,    6),
+        "profit_factor":      round(pf,        4),
+        "hit_ratio":          round(hr,        4),
+        "avg_win":            round(aw,        8),
+        "avg_loss":           round(al,        8),
+        "win_loss_ratio":     round(wlr,       4),
+        "value_at_risk_95":   round(var_95,    6),
+        "cvar_95":            round(cvar_95,   6),
+        "skewness":           round(skew,      4),
+        "kurtosis":           round(kurt,      4),
+        "tail_ratio":         round(tail_r,    4),
+        "average_turnover":   round(avg_to,    2),
+        "avg_holding_period": round(avg_hp,    2),
+        "num_trades":         len(trades),
     }
 
 
